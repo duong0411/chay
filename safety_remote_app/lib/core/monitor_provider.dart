@@ -1,0 +1,274 @@
+import 'dart:async';
+import 'dart:convert';
+
+import 'package:flutter/foundation.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import 'alert_notifications.dart';
+import 'background_monitor.dart';
+import 'config.dart';
+import 'device_api.dart';
+import 'device_snapshot.dart';
+import 'mqtt_service.dart';
+
+class MonitorProvider extends ChangeNotifier {
+  MonitorProvider({
+    DeviceApi? api,
+    HostStore? hosts,
+    MqttService? mqtt,
+  })  : _api = api ?? DeviceApi(),
+        _hosts = hosts ?? HostStore(),
+        _mqtt = mqtt ?? MqttService();
+
+  final DeviceApi _api;
+  final HostStore _hosts;
+  final MqttService _mqtt;
+  final AlertNotifications _alerts = AlertNotifications.instance;
+
+  Timer? _timer;
+  StreamSubscription? _mqttSub;
+
+  bool connecting = false;
+  bool entered = false;
+  bool live = false;
+  bool backgroundOn = false;
+  ConnectMode mode = ConnectMode.local;
+  String host = AppConfig.defaultHost;
+  String chipId = AppConfig.defaultChipId;
+  String status = 'Chưa kết nối thiết bị';
+  DeviceSnapshot? data;
+
+  bool get canEnterSystem => entered && (data != null || isMqtt);
+  bool get isMqtt => mode == ConnectMode.mqtt;
+
+  Future<void> loadSavedHost() async {
+    mode = await _hosts.readMode();
+    final savedHost = await _hosts.readHost();
+    final savedChip = await _hosts.readChip();
+    if (savedHost != null && savedHost.trim().isNotEmpty) {
+      host = savedHost.trim();
+    }
+    if (savedChip != null && savedChip.trim().isNotEmpty) {
+      chipId = savedChip.trim();
+      AppConfig.setChipId(chipId);
+    }
+    notifyListeners();
+  }
+
+  Future<void> _ensureNotifyPermission() async {
+    await _alerts.requestPermission();
+    if (await Permission.notification.isDenied) {
+      await Permission.notification.request();
+    }
+  }
+
+  Future<void> _startBackground() async {
+    await _ensureNotifyPermission();
+    await BackgroundMonitor.start(mode: mode, host: host, chipId: chipId);
+    backgroundOn = true;
+  }
+
+  Future<bool> connectLocal(String rawHost) async {
+    final next = rawHost.trim().isEmpty ? AppConfig.defaultHost : rawHost.trim();
+    connecting = true;
+    mode = ConnectMode.local;
+    status = 'Đang vào máy $next...';
+    notifyListeners();
+
+    await _mqtt.disconnect();
+    _mqttSub?.cancel();
+    _mqttSub = null;
+
+    try {
+      final snap = await _api.fetchSensors(next);
+      host = next;
+      await _hosts.writeHost(next);
+      await _hosts.writeMode(ConnectMode.local);
+      data = snap;
+      entered = true;
+      live = true;
+      status = 'Gần máy · $next';
+      _startPoll();
+      await _startBackground();
+      await _alerts.handleSensorAlerts(
+        fireAlert: snap.fireAlert,
+        gasAlert: snap.gasAlert,
+        detail: snap.alarmLabel,
+      );
+      return true;
+    } on DeviceException catch (e) {
+      entered = false;
+      live = false;
+      status = e.message;
+      return false;
+    } finally {
+      connecting = false;
+      notifyListeners();
+    }
+  }
+
+  Future<bool> connectMqtt(String rawChip) async {
+    final id = rawChip.trim().isEmpty ? AppConfig.defaultChipId : rawChip.trim();
+    connecting = true;
+    mode = ConnectMode.mqtt;
+    AppConfig.setChipId(id);
+    chipId = AppConfig.chipId;
+    status = 'Đang vào MQTT chip $chipId...';
+    data = null;
+    notifyListeners();
+
+    _timer?.cancel();
+    _timer = null;
+
+    final ok = await _mqtt.connect(force: true);
+    if (!ok) {
+      connecting = false;
+      entered = false;
+      live = false;
+      status = 'Không vào được broker. Kiểm tra Internet.';
+      notifyListeners();
+      return false;
+    }
+
+    await _hosts.writeChip(chipId);
+    await _hosts.writeMode(ConnectMode.mqtt);
+    _mqttSub?.cancel();
+    _mqttSub = _mqtt.messages.listen(_onMqtt);
+    await _startBackground();
+    connecting = false;
+    entered = true;
+    live = false;
+    status = 'MQTT OK · chờ chip $chipId online...';
+    notifyListeners();
+    return true;
+  }
+
+  void disconnect() {
+    _timer?.cancel();
+    _timer = null;
+    _mqttSub?.cancel();
+    _mqttSub = null;
+    unawaited(_mqtt.disconnect());
+    unawaited(BackgroundMonitor.stop());
+    backgroundOn = false;
+    entered = false;
+    live = false;
+    data = null;
+    _alerts.resetAlertEdge();
+    status = isMqtt
+        ? 'Đã ngắt MQTT. Nhập Chip ID để theo dõi từ xa.'
+        : 'Đã ngắt. Vào lại Wi‑Fi ${AppConfig.wifiName} để theo dõi gần.';
+    notifyListeners();
+  }
+
+  Future<void> refresh() async {
+    if (isMqtt) {
+      status = live ? 'MQTT · chip $chipId' : 'Đang chờ chip $chipId...';
+      notifyListeners();
+      return;
+    }
+    if (!entered) return;
+    try {
+      data = await _api.fetchSensors(host);
+      live = true;
+      status = 'Gần máy · $host';
+      await _alerts.handleSensorAlerts(
+        fireAlert: data!.fireAlert,
+        gasAlert: data!.gasAlert,
+        detail: data!.alarmLabel,
+      );
+    } on DeviceException catch (e) {
+      live = false;
+      status = e.message;
+    }
+    notifyListeners();
+  }
+
+  Future<void> toggleBuzzer() async {
+    if (isMqtt) {
+      _mqtt.toggleBuzzer();
+      return;
+    }
+    await _api.toggleBuzzer(host);
+    await refresh();
+  }
+
+  Future<void> toggleGps() async {
+    if (isMqtt) {
+      _mqtt.toggleGps();
+      return;
+    }
+    await _api.toggleGps(host);
+    await refresh();
+  }
+
+  Future<void> sendTestSms() async {
+    if (isMqtt) {
+      _mqtt.sendTestSms();
+      return;
+    }
+    final res = await _api.sendTestSms(host);
+    if (res['success'] == false) {
+      throw DeviceException('${res['error'] ?? 'Không gửi được SMS'}');
+    }
+    await refresh();
+  }
+
+  Future<void> testAlarmNotification() async {
+    await _ensureNotifyPermission();
+    await _alerts.showAlarm(
+      title: 'Kiểm tra cảnh báo cháy',
+      body: 'Thông báo nền hoạt động — tắt app vẫn nhận được khi giám sát bật.',
+    );
+  }
+
+  void _onMqtt(Map<String, dynamic> msg) {
+    final topic = msg['topic'] as String? ?? '';
+    final value = msg['value'];
+    final raw = msg['raw']?.toString() ?? '';
+
+    if (topic == AppConfig.topicOnline) {
+      final online = value.toString().toLowerCase() == 'online';
+      live = online || data != null;
+      status = online ? 'Từ xa · chip $chipId online' : 'Chip $chipId offline';
+      notifyListeners();
+      return;
+    }
+
+    if (topic == AppConfig.topicVitals) {
+      try {
+        final map = value is Map<String, dynamic>
+            ? value
+            : value is Map
+                ? value.map((k, v) => MapEntry(k.toString(), v))
+                : jsonDecode(raw) as Map<String, dynamic>;
+        data = DeviceSnapshot.fromJson(map);
+        live = true;
+        status = 'Từ xa · chip $chipId';
+        unawaited(
+          _alerts.handleSensorAlerts(
+            fireAlert: data!.fireAlert,
+            gasAlert: data!.gasAlert,
+            detail: data!.alarmLabel,
+          ),
+        );
+        notifyListeners();
+      } catch (e) {
+        if (kDebugMode) print('vitals parse: $e');
+      }
+    }
+  }
+
+  void _startPoll() {
+    _timer?.cancel();
+    _timer = Timer.periodic(AppConfig.pollInterval, (_) => refresh());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _mqttSub?.cancel();
+    unawaited(_mqtt.dispose());
+    super.dispose();
+  }
+}

@@ -1,0 +1,123 @@
+name: Build APK & IPA
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: mobile-build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: safety_remote_app
+
+jobs:
+  android-apk:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos || true
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-remote-apk
+          path: safety_remote_app/build/app/outputs/flutter-apk/app-release.apk
+          if-no-files-found: error
+
+  ios-ipa:
+    name: iOS IPA
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: Build iOS (no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Pack unsigned IPA
+        run: |
+          mkdir -p build/ios/ipa_payload/Payload
+          cp -R build/ios/iphoneos/Runner.app build/ios/ipa_payload/Payload/
+          (
+            cd build/ios/ipa_payload
+            zip -qr ../SafetyRemote-unsigned.ipa Payload
+          )
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-remote-ipa-unsigned
+          path: safety_remote_app/build/ios/SafetyRemote-unsigned.ipa
+          if-no-files-found: error
+
+      - name: Decode signing material
+        id: signing
+        if: ${{ vars.ENABLE_IOS_SIGNING == 'true' }}
+        env:
+          IOS_CERTIFICATE_BASE64: ${{ secrets.IOS_CERTIFICATE_BASE64 }}
+          IOS_PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}
+          IOS_CERTIFICATE_PASSWORD: ${{ secrets.IOS_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH=$RUNNER_TEMP/cert.p12
+          PROV_PATH=$RUNNER_TEMP/profile.mobileprovision
+          KEYCHAIN_PATH=$RUNNER_TEMP/app-signing.keychain-db
+          echo "$IOS_CERTIFICATE_BASE64" | base64 --decode > "$CERT_PATH"
+          echo "$IOS_PROVISION_BASE64" | base64 --decode > "$PROV_PATH"
+          security create-keychain -p "" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "${IOS_CERTIFICATE_PASSWORD:-}" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          mkdir -p "$HOME/Library/MobileDevice/Provisioning Profiles"
+          UUID=$(security cms -D -i "$PROV_PATH" | plutil -extract UUID raw -)
+          cp "$PROV_PATH" "$HOME/Library/MobileDevice/Provisioning Profiles/$UUID.mobileprovision"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Build signed IPA
+        if: steps.signing.outputs.ready == 'true'
+        run: flutter build ipa --release
+
+      - name: Upload signed IPA
+        if: steps.signing.outputs.ready == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: safety-remote-ipa-signed
+          path: safety_remote_app/build/ios/ipa/*.ipa
+          if-no-files-found: warn
