@@ -22,6 +22,8 @@ class DeviceSnapshot {
     required this.wifiClients,
     required this.wifiTxDbm,
     required this.wifiChannel,
+    this.visionFire = false,
+    this.visionLabel = '',
   });
 
   final double temp;
@@ -46,15 +48,49 @@ class DeviceSnapshot {
   final int wifiClients;
   final double wifiTxDbm;
   final int wifiChannel;
+  final bool visionFire;
+  final String visionLabel;
 
   bool get shtOk => temp > -900;
-  bool get alarmActive => gasAlert || fireAlert;
+  bool get alarmActive => gasAlert || fireAlert || visionFire;
 
   String get alarmLabel {
     final parts = <String>[];
     if (fireAlert) parts.add('Phát hiện cháy');
+    if (visionFire) {
+      parts.add(visionLabel.isEmpty ? 'Camera AI phát hiện lửa' : visionLabel);
+    }
     if (gasAlert) parts.add('Rò gas/khói');
     return parts.isEmpty ? 'An toàn' : parts.join(' · ');
+  }
+
+  DeviceSnapshot withVision({required bool fire, String label = ''}) {
+    return DeviceSnapshot(
+      temp: temp,
+      hum: hum,
+      volt: volt,
+      gas: gas,
+      gasAlert: gasAlert,
+      fireAlert: fireAlert,
+      buzzer: buzzer,
+      gpsPower: gpsPower,
+      gpsGnss: gpsGnss,
+      gpsLat: gpsLat,
+      gpsLon: gpsLon,
+      smsTo: smsTo,
+      smsStatus: smsStatus,
+      smsText: smsText,
+      smsResult: smsResult,
+      smsSending: smsSending,
+      smsSentCount: smsSentCount,
+      smsFailCount: smsFailCount,
+      smsAgeSec: smsAgeSec,
+      wifiClients: wifiClients,
+      wifiTxDbm: wifiTxDbm,
+      wifiChannel: wifiChannel,
+      visionFire: fire,
+      visionLabel: label,
+    );
   }
 
   bool get hasFix {

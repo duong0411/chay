@@ -171,12 +171,14 @@ class HomePage extends StatelessWidget {
                     Expanded(
                       child: _MetricTile(
                         label: 'Báo cháy',
-                        value: data.fireAlert ? 'CHÁY' : 'OK',
+                        value: (data.fireAlert || data.visionFire) ? 'CHÁY' : 'OK',
                         unit: '',
-                        detail: 'GPIO26 · Signal',
+                        detail: data.visionFire
+                            ? 'AI Camera · MQTT'
+                            : 'GPIO26 · Signal',
                         icon: Icons.local_fire_department_rounded,
                         color: SafetyTheme.pulse,
-                        alert: data.fireAlert,
+                        alert: data.fireAlert || data.visionFire,
                       ),
                     ),
                   ],

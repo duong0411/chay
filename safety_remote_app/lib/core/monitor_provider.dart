@@ -32,6 +32,8 @@ class MonitorProvider extends ChangeNotifier {
   bool entered = false;
   bool live = false;
   bool backgroundOn = false;
+  bool visionFire = false;
+  String visionLabel = '';
   ConnectMode mode = ConnectMode.local;
   String host = AppConfig.defaultHost;
   String chipId = AppConfig.defaultChipId;
@@ -151,6 +153,8 @@ class MonitorProvider extends ChangeNotifier {
     unawaited(_mqtt.disconnect());
     unawaited(BackgroundMonitor.stop());
     backgroundOn = false;
+    visionFire = false;
+    visionLabel = '';
     entered = false;
     live = false;
     data = null;
@@ -242,12 +246,15 @@ class MonitorProvider extends ChangeNotifier {
             : value is Map
                 ? value.map((k, v) => MapEntry(k.toString(), v))
                 : jsonDecode(raw) as Map<String, dynamic>;
-        data = DeviceSnapshot.fromJson(map);
+        data = DeviceSnapshot.fromJson(map).withVision(
+          fire: visionFire,
+          label: visionLabel,
+        );
         live = true;
         status = 'Từ xa · chip $chipId';
         unawaited(
           _alerts.handleSensorAlerts(
-            fireAlert: data!.fireAlert,
+            fireAlert: data!.fireAlert || data!.visionFire,
             gasAlert: data!.gasAlert,
             detail: data!.alarmLabel,
           ),
@@ -255,6 +262,42 @@ class MonitorProvider extends ChangeNotifier {
         notifyListeners();
       } catch (e) {
         if (kDebugMode) print('vitals parse: $e');
+      }
+      return;
+    }
+
+    if (topic == AppConfig.topicVision) {
+      try {
+        final map = value is Map<String, dynamic>
+            ? value
+            : value is Map
+                ? value.map((k, v) => MapEntry(k.toString(), v))
+                : jsonDecode(raw) as Map<String, dynamic>;
+        final fire = map['fireAlert'] == true ||
+            map['fireAlert'] == 1 ||
+            '${map['fireAlert']}' == 'true';
+        visionFire = fire;
+        visionLabel = '${map['label'] ?? ''}'.trim().isEmpty
+            ? 'Camera AI laptop phát hiện lửa'
+            : '${map['label']}';
+        if (data != null) {
+          data = data!.withVision(fire: visionFire, label: visionLabel);
+        }
+        status = fire
+            ? 'Camera AI · cảnh báo lửa (MQTT)'
+            : 'Camera AI · hết cảnh báo';
+        unawaited(
+          _alerts.handleSensorAlerts(
+            fireAlert: fire || (data?.fireAlert ?? false),
+            gasAlert: data?.gasAlert ?? false,
+            detail: fire
+                ? visionLabel
+                : (data?.alarmLabel ?? 'An toàn'),
+          ),
+        );
+        notifyListeners();
+      } catch (e) {
+        if (kDebugMode) print('vision parse: $e');
       }
     }
   }

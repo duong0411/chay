@@ -25,9 +25,12 @@ class AppConfig {
 
   static String get topicOnline => 'tele/$chipId/status';
   static String get topicVitals => 'tele/${chipId}_vitals/status';
+  /// Cảnh báo camera AI từ laptop (Safety Remote Desktop → MQTT duynguyen).
+  static String get topicVision => 'tele/${chipId}_vision/status';
   static String get cmndBuzzer => 'cmnd/${chipId}_buzzer/POWER';
   static String get cmndGps => 'cmnd/${chipId}_gps/POWER';
   static String get cmndSms => 'cmnd/${chipId}_sms/POWER';
 
-  static List<String> get subscribeTopics => [topicOnline, topicVitals];
+  static List<String> get subscribeTopics =>
+      [topicOnline, topicVitals, topicVision];
 }

@@ -222,15 +222,43 @@ class _BgRunner {
         final rec = event.payload as MqttPublishMessage;
         final payload =
             MqttPublishPayload.bytesToStringAsString(rec.payload.message);
-        if (event.topic != AppConfig.topicVitals) continue;
         try {
           final decoded = jsonDecode(payload);
-          if (decoded is Map) {
-            await _onVitals(Map<String, dynamic>.from(decoded));
+          if (decoded is! Map) continue;
+          final map = Map<String, dynamic>.from(decoded);
+          if (event.topic == AppConfig.topicVitals) {
+            await _onVitals(map);
+          } else if (event.topic == AppConfig.topicVision) {
+            await _onVision(map);
           }
         } catch (_) {}
       }
     });
+  }
+
+  Future<void> _onVision(Map<String, dynamic> map) async {
+    bool b(dynamic v) => v == true || v == 1 || '$v' == 'true';
+    final fire = b(map['fireAlert']);
+    final label = '${map['label'] ?? ''}'.trim().isEmpty
+        ? 'Camera AI laptop phát hiện lửa'
+        : '${map['label']}';
+
+    await alerts.handleSensorAlerts(
+      fireAlert: fire,
+      gasAlert: false,
+      detail: label,
+    );
+
+    final android = service is AndroidServiceInstance
+        ? service as AndroidServiceInstance
+        : null;
+    if (android != null) {
+      await android.setForegroundNotificationInfo(
+        title: 'Safety Remote đang giám sát',
+        content: fire ? '🔥 $label' : 'Camera AI · an toàn',
+      );
+    }
+    service.invoke('vision', map);
   }
 
   Future<void> _onVitals(Map<String, dynamic> map) async {

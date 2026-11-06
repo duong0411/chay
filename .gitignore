@@ -44,8 +44,15 @@
 *.p12
 *.mobileprovision
 
+# Desktop PyInstaller
+desktop_app/build/
+desktop_app/dist/
+desktop_app/**/__pycache__/
+desktop_app/*.spec.bak
+
 # Misc
 *.log
 *.pyc
+__pycache__/
 .history/
 migrate_working_dir/
