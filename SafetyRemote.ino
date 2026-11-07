@@ -81,12 +81,23 @@ String staConnStatus = "Chưa kết nối";   // Đang kết nối / Thành côn
 String staConnDetail = "Chưa cấu hình Wi‑Fi nhà";
 uint32_t staConnOkMs = 0;
 
+// SoftAP portal: chỉ bật khi cấu hình / bàn giao / mất WiFi nhà
+bool portalApActive = false;
+bool portalDnsStarted = false;
+uint32_t portalStopAtMs = 0;   // hẹn tắt SoftAP sau khi STA OK (để ĐT kịp thấy "thành công")
+uint32_t staFailSinceMs = 0;
+const uint32_t PORTAL_STOP_DELAY_MS = 12000; // 12s sau GOT_IP
+const uint32_t STA_FAIL_OPEN_PORTAL_MS = 25000;
+
 // Forward decls (arduino-cli không luôn tự tạo prototype)
 String jsonEscape(const String &s);
 void readAndPrintAll();
 void handleCaptiveRedirect();
 void handleWifiScan();
 void wifiScanTaskCode(void *pv);
+void startPortalAP(const char *why);
+void stopPortalAP(const char *why);
+void mqttApplyPortalCommand(const String &raw);
 
 bool eg800kPower = true;
 bool buzzerState = false;
@@ -1164,7 +1175,8 @@ String buildSensorJson() {
   json += "\"staSsid\":\"" + jsonEscape(String(getSafetyStaSsid())) + "\",";
   json += "\"staConnected\":" + String(safetyStaConnected() ? "true" : "false") + ",";
   json += "\"staStatus\":\"" + jsonEscape(staConnStatus) + "\",";
-  json += "\"staDetail\":\"" + jsonEscape(staConnDetail) + "\"";
+  json += "\"staDetail\":\"" + jsonEscape(staConnDetail) + "\",";
+  json += "\"portalActive\":" + String(portalApActive ? "true" : "false");
   json += "}";
   return json;
 }
@@ -1189,6 +1201,7 @@ void handleWifiApiGet() {
   json += "\"staConnected\":" + String(safetyStaConnected() ? "true" : "false") + ",";
   json += "\"staStatus\":\"" + jsonEscape(staConnStatus) + "\",";
   json += "\"staDetail\":\"" + jsonEscape(staConnDetail) + "\",";
+  json += "\"portalActive\":" + String(portalApActive ? "true" : "false") + ",";
   json += "\"mqttConnected\":" + String(safetyMqttConnected() ? "true" : "false") + ",";
   json += "\"portal\":\"http://192.168.4.1/\"";
   json += "}";
@@ -1305,13 +1318,30 @@ void handleWifiApiPost() {
   safetySaveWifiPrefs(ssid, pass, chip);
   staConnStatus = "Đang kết nối";
   staConnDetail = "Đang kết nối tới " + ssid + "...";
+  staFailSinceMs = 0;
+  // Giữ SoftAP đến khi GOT_IP (rồi hẹn tắt) — ĐT còn thấy báo thành công
+  if (!portalApActive) startPortalAP("cau hinh WiFi moi");
   WiFi.disconnect(false);
   delay(100);
   safetyTryStaConnect(true);
-  // SoftAP portal vẫn mở — khách sau này vào lại Safety Remote để đổi WiFi
   server.send(200, "application/json",
-    "{\"success\":true,\"message\":\"Đã lưu. Đang kết nối Wi‑Fi nhà...\",\"staStatus\":\"Đang kết nối\",\"chipId\":\"" +
+    "{\"success\":true,\"message\":\"Đã lưu. Đang kết nối Wi‑Fi nhà... SoftAP sẽ tắt sau khi thành công.\",\"staStatus\":\"Đang kết nối\",\"chipId\":\"" +
     String(getSafetyChipId()) + "\",\"portal\":\"http://192.168.4.1/\"}");
+}
+
+void mqttApplyPortalCommand(const String &raw) {
+  String s = raw;
+  s.trim();
+  s.toUpperCase();
+  if (s == "ON" || s == "1" || s == "OPEN") {
+    startPortalAP("MQTT ban giao");
+    staConnDetail = "Portal SoftAP đã mở để bàn giao / đổi Wi‑Fi (Safety Remote)";
+  } else if (s == "OFF" || s == "0" || s == "CLOSE") {
+    stopPortalAP("MQTT tat portal");
+  } else {
+    if (portalApActive) stopPortalAP("MQTT toggle");
+    else startPortalAP("MQTT toggle ban giao");
+  }
 }
 
 String jsonEscape(const String &s) {
@@ -1365,6 +1395,51 @@ void handleSensors() {
   server.send(200, "application/json", buildSensorJson());
 }
 
+void startPortalAP(const char *why) {
+  portalStopAtMs = 0;
+  if (portalApActive) {
+    Serial.printf("  [WIFI] SoftAP da mo (%s)\n", why ? why : "");
+    return;
+  }
+  WiFi.mode(WIFI_AP_STA);
+  delay(50);
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("  [WIFI] softAPConfig() that bai");
+  }
+  bool ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
+  if (!ok) {
+    delay(150);
+    ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
+  }
+  portalApActive = ok;
+  applyWifiMaxPower();
+  if (ok) {
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(53, "*", local_IP);
+    portalDnsStarted = true;
+  }
+  Serial.printf("  [WIFI] SoftAP %s (%s) http://192.168.4.1/\n",
+                ok ? "ON" : "FAIL", why ? why : "");
+}
+
+void stopPortalAP(const char *why) {
+  portalStopAtMs = 0;
+  if (portalDnsStarted) {
+    dnsServer.stop();
+    portalDnsStarted = false;
+  }
+  if (portalApActive || (WiFi.getMode() & WIFI_MODE_AP)) {
+    WiFi.softAPdisconnect(true);
+  }
+  portalApActive = false;
+  wifiStationCount = 0;
+  if (safetyHasStaConfig() || safetyStaConnected()) {
+    WiFi.mode(WIFI_STA);
+    delay(30);
+  }
+  Serial.printf("  [WIFI] SoftAP OFF (%s)\n", why ? why : "");
+}
+
 void onWifiEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
@@ -1387,8 +1462,15 @@ void onWifiEvent(WiFiEvent_t event) {
     case ARDUINO_EVENT_WIFI_STA_GOT_IP:
       staConnStatus = "Thành công";
       staConnDetail = String("✅ Kết nối thành công: ") + WiFi.SSID() +
-                      " · IP " + WiFi.localIP().toString();
+                      " · IP " + WiFi.localIP().toString() +
+                      " · SoftAP sẽ tắt sau vài giây";
       staConnOkMs = millis();
+      staFailSinceMs = 0;
+      // Hẹn tắt portal — không tắt ngay để ĐT còn đọc thông báo thành công
+      if (portalApActive) {
+        portalStopAtMs = millis() + PORTAL_STOP_DELAY_MS;
+        Serial.println("  [WIFI] STA OK — hen tat SoftAP portal");
+      }
       Serial.print("  [WIFI] STA THANH CONG IP=");
       Serial.println(WiFi.localIP());
       break;
@@ -1399,6 +1481,7 @@ void onWifiEvent(WiFiEvent_t event) {
         staConnStatus = "Thất bại";
         staConnDetail = String("Không kết nối được \"") + String(getSafetyStaSsid()) +
                         "\". Kiểm tra mật khẩu / sóng rồi thử lại.";
+        if (staFailSinceMs == 0) staFailSinceMs = millis();
         Serial.println("  [WIFI] STA disconnect / fail");
       }
       break;
@@ -1408,6 +1491,11 @@ void onWifiEvent(WiFiEvent_t event) {
 }
 
 void applyWifiMaxPower() {
+  wifi_mode_t mode = WiFi.getMode();
+  if (mode == WIFI_MODE_NULL) {
+    Serial.println("  [WIFI] skip TX power — WiFi mode chua san sang");
+    return;
+  }
   // Tắt tiết kiệm năng lượng — giữ RF luôn sẵn sàng phục vụ điện thoại
   WiFi.setSleep(false);
   esp_wifi_set_ps(WIFI_PS_NONE);
@@ -1418,13 +1506,12 @@ void applyWifiMaxPower() {
   // esp_wifi_set_max_tx_power đơn vị 0.25 dBm → 78 = 19.5 dBm, 80 = 20 dBm (trần phần cứng)
   esp_wifi_set_max_tx_power(80);
 
-  // Ưu tiên tương thích điện thoại: 802.11b/g/n, băng thông 20 MHz
-  uint8_t protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
-  esp_wifi_set_protocol(WIFI_IF_AP, protocol);
-  esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
-
-  // SoftAP mặc định ngắt STA sau ~5 phút không traffic — kéo dài để điện thoại ít bị đá
-  esp_wifi_set_inactive_time(WIFI_IF_AP, 600); // giây
+  if (portalApActive || (mode & WIFI_MODE_AP)) {
+    uint8_t protocol = WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N;
+    esp_wifi_set_protocol(WIFI_IF_AP, protocol);
+    esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
+    esp_wifi_set_inactive_time(WIFI_IF_AP, 600); // giây
+  }
 
   int txQdbm = WiFi.getTxPower(); // quarter-dBm
   Serial.print("  [WIFI] TX power thuc te: ");
@@ -1433,45 +1520,25 @@ void applyWifiMaxPower() {
 }
 
 void setupWiFi() {
-  Serial.println("  [WIFI] Configuring soft Access Point...");
+  Serial.println("  [WIFI] Configuring WiFi...");
+
+  // Đọc prefs trước để quyết định có mở SoftAP portal hay không
+  safetyLoadWifiPrefs();
 
   WiFi.persistent(false);
-  WiFi.disconnect(true);
-  delay(100);
-
   WiFi.onEvent(onWifiEvent);
-  // SoftAP (gần máy) + STA (WiFi nhà → MQTT từ xa)
-  WiFi.mode(WIFI_AP_STA);
-  delay(50);
 
-  // IP portal trước, rồi softAP
-  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-    Serial.println("  [WIFI] softAPConfig() that bai, dung IP mac dinh.");
+  // Arduino-ESP32 3.x: WebServer::begin() tạo socket lwIP → phải bật WiFi/network
+  // stack TRƯỚC, không thì crash xQueueSemaphoreTake (mutex lwIP NULL).
+  if (!safetyHasStaConfig()) {
+    startPortalAP("chua cau hinh WiFi nha");
+  } else {
+    portalApActive = false;
+    portalDnsStarted = false;
+    WiFi.mode(WIFI_STA);
+    delay(80);
+    applyWifiMaxPower();
   }
-
-  bool ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
-  if (!ok) {
-    Serial.println("  [WIFI] softAP() THAT BAI — thu lai...");
-    delay(200);
-    ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
-  }
-
-  applyWifiMaxPower();
-
-  // Captive portal: mọi DNS → 192.168.4.1 (popup đăng nhập WiFi trên ĐT)
-  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
-  dnsServer.start(53, "*", local_IP);
-
-  IPAddress myIP = WiFi.softAPIP();
-  Serial.print("  [WIFI] SSID: ");
-  Serial.println(ap_ssid);
-  Serial.println("  [WIFI] SoftAP: mo (khong mat khau)");
-  Serial.print("  [WIFI] Channel: ");
-  Serial.println(WIFI_AP_CHANNEL);
-  Serial.print("  [WIFI] AP IP: ");
-  Serial.println(myIP);
-  Serial.print("  [WIFI] softAP OK: ");
-  Serial.println(ok ? "YES" : "NO");
 
   server.on("/", handleRoot);
   server.on("/style.css", handleStyleCss);
@@ -1506,7 +1573,15 @@ void setupWiFi() {
   });
 
   server.begin();
-  Serial.println("  [WIFI] Portal+Dashboard — http://192.168.4.1/");
+
+  if (safetyHasStaConfig()) {
+    // Đã có WiFi → chỉ STA, SoftAP tắt (portal khi bàn giao / mất WiFi)
+    staConnStatus = "Đang kết nối";
+    staConnDetail = String("Đang kết nối tới ") + String(getSafetyStaSsid()) + "...";
+    safetyTryStaConnect(true);
+    Serial.printf("  [WIFI] STA-only toi \"%s\" — SoftAP tat (ban giao: MQTT portal ON / mat WiFi)\n",
+                  getSafetyStaSsid());
+  }
 }
 
 // ==================================================================================
@@ -1582,8 +1657,23 @@ void setup() {
 // 5. VÒNG LẶP CHÍNH (LOOP)
 // ==================================================================================
 void loop() {
-  // Captive DNS + MQTT + STA (SoftAP portal luôn mở để đổi WiFi)
-  dnsServer.processNextRequest();
+  // SoftAP portal: DNS chỉ khi đang mở; hẹn tắt sau khi STA OK
+  if (portalApActive) {
+    dnsServer.processNextRequest();
+  }
+  if (portalStopAtMs != 0 && (int32_t)(millis() - portalStopAtMs) >= 0) {
+    stopPortalAP("STA connected — het ban giao");
+  }
+  // Mất WiFi nhà lâu → mở lại portal để cấu hình / bàn giao
+  if (safetyHasStaConfig() && !safetyStaConnected()) {
+    if (staFailSinceMs == 0) staFailSinceMs = millis();
+    else if (!portalApActive && (millis() - staFailSinceMs) >= STA_FAIL_OPEN_PORTAL_MS) {
+      startPortalAP("mat WiFi nha — mo portal");
+    }
+  } else if (safetyStaConnected()) {
+    staFailSinceMs = 0;
+  }
+
   handleMqttClient();
 
   // Phục vụ HTTP ưu tiên — gọi nhiều lần mỗi vòng để DT không bị treo khi GPS/SMS bận
@@ -1595,7 +1685,15 @@ void loop() {
       Serial.write(SerialGPS.read());
     }
     while (Serial.available()) {
-      SerialGPS.write(Serial.read());
+      char c = (char)Serial.peek();
+      // Phím 'p' = bật/tắt SoftAP portal bàn giao (không gửi sang module)
+      if (c == 'p' || c == 'P') {
+        Serial.read();
+        if (portalApActive) stopPortalAP("serial p");
+        else startPortalAP("serial p — ban giao");
+      } else {
+        SerialGPS.write(Serial.read());
+      }
     }
   }
 

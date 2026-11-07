@@ -12,7 +12,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
   <title>Safety Remote</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css?v=3" />
+  <link rel="stylesheet" href="/style.css?v=4" />
 </head>
 <body>
   <div id="app">
@@ -59,6 +59,10 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
         <div class="card-head">
           <span>1. Portal Wi‑Fi nhà</span>
           <span class="badge" id="badge-sta">--</span>
+        </div>
+        <div class="muted" style="margin-bottom:8px;font-size:12px;line-height:1.4">
+          SoftAP <b>Safety Remote</b> chỉ mở khi cấu hình / bàn giao / mất Wi‑Fi nhà.
+          Sau khi kết nối thành công SoftAP tự tắt (~12s).
         </div>
         <div id="wifi-sta-status" class="wifi-sta-box">Đang đọc trạng thái Wi‑Fi…</div>
         <button id="btn-wifi-scan" class="btn btn-ghost" type="button">Quét Wi‑Fi xung quanh</button>
@@ -130,7 +134,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
     </section>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js?v=3"></script>
+  <script src="/app.js?v=4"></script>
 </body>
 </html>
 )rawliteral";

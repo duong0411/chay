@@ -13,6 +13,7 @@
  *  cmnd/{chip}_gps/POWER       TOGGLE|ON|OFF
  *  cmnd/{chip}_sms/POWER       bất kỳ → gửi SMS test
  *  cmnd/{chip}_smsnum/SET      "0377...,0988..." → lưu số nhận SMS
+ *  cmnd/{chip}_portal/POWER    ON|OFF|TOGGLE → SoftAP bàn giao WiFi
  */
 #pragma once
 
@@ -38,6 +39,7 @@ extern void mqttApplyBuzzerCommand(const String& raw);
 extern void mqttApplyGpsCommand(const String& raw);
 extern void mqttApplySmsCommand(const String& raw);
 extern void mqttApplySmsNumbersCommand(const String& raw);
+extern void mqttApplyPortalCommand(const String& raw);
 
 static WebSocketsClient* safetyWs = nullptr;
 static MQTTPubSubClient* safetyMqtt = nullptr;
@@ -116,6 +118,9 @@ inline void safetyHandleCmd(const String& kind, const String& raw) {
   } else if (kind == "smsnum") {
     mqttApplySmsNumbersCommand(raw);
     safetyPublishVitals();
+  } else if (kind == "portal") {
+    mqttApplyPortalCommand(raw);
+    safetyPublishVitals();
   }
 }
 
@@ -140,6 +145,7 @@ inline void safetyMqttEnsureConnected() {
   String gpsTopic = String("cmnd/") + safetyChipId + "_gps/POWER";
   String smsTopic = String("cmnd/") + safetyChipId + "_sms/POWER";
   String smsNumTopic = String("cmnd/") + safetyChipId + "_smsnum/SET";
+  String portalTopic = String("cmnd/") + safetyChipId + "_portal/POWER";
 
   safetyMqtt->subscribe(buzzerTopic, [](const char* p, unsigned int n) {
     String s;
@@ -163,6 +169,12 @@ inline void safetyMqttEnsureConnected() {
     String s;
     for (unsigned i = 0; i < n; i++) s += p[i];
     safetyHandleCmd("smsnum", s);
+  });
+  delay(20);
+  safetyMqtt->subscribe(portalTopic, [](const char* p, unsigned int n) {
+    String s;
+    for (unsigned i = 0; i < n; i++) s += p[i];
+    safetyHandleCmd("portal", s);
   });
 }
 

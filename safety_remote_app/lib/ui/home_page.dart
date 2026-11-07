@@ -99,9 +99,7 @@ class HomePage extends StatelessWidget {
                               Expanded(
                                 child: Text(
                                   device.live
-                                      ? (device.isMqtt
-                                          ? 'Từ xa · chip ${device.chipId}'
-                                          : 'Gần máy · ${device.host}')
+                                      ? 'Từ xa · chip ${device.chipId}'
                                       : device.status,
                                   style: const TextStyle(
                                     color: SafetyTheme.muted,

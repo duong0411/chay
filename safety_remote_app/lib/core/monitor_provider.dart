@@ -34,17 +34,19 @@ class MonitorProvider extends ChangeNotifier {
   bool backgroundOn = false;
   bool visionFire = false;
   String visionLabel = '';
-  ConnectMode mode = ConnectMode.local;
+  ConnectMode mode = ConnectMode.mqtt;
   String host = AppConfig.defaultHost;
   String chipId = AppConfig.defaultChipId;
-  String status = 'Chưa kết nối thiết bị';
+  String status = 'Nhập Chip ID để theo dõi từ xa';
   DeviceSnapshot? data;
 
   bool get canEnterSystem => entered && (data != null || isMqtt);
   bool get isMqtt => mode == ConnectMode.mqtt;
 
   Future<void> loadSavedHost() async {
-    mode = await _hosts.readMode();
+    // App mobile chỉ theo dõi từ xa (MQTT) — bỏ SoftAP gần máy trên UI.
+    mode = ConnectMode.mqtt;
+    await _hosts.writeMode(ConnectMode.mqtt);
     final savedHost = await _hosts.readHost();
     final savedChip = await _hosts.readChip();
     if (savedHost != null && savedHost.trim().isNotEmpty) {
@@ -54,6 +56,7 @@ class MonitorProvider extends ChangeNotifier {
       chipId = savedChip.trim();
       AppConfig.setChipId(chipId);
     }
+    status = 'Nhập Chip ID để theo dõi từ xa';
     notifyListeners();
   }
 
@@ -159,9 +162,8 @@ class MonitorProvider extends ChangeNotifier {
     live = false;
     data = null;
     _alerts.resetAlertEdge();
-    status = isMqtt
-        ? 'Đã ngắt MQTT. Nhập Chip ID để theo dõi từ xa.'
-        : 'Đã ngắt. Vào lại Wi‑Fi ${AppConfig.wifiName} để theo dõi gần.';
+    mode = ConnectMode.mqtt;
+    status = 'Đã ngắt MQTT. Nhập Chip ID để theo dõi từ xa.';
     notifyListeners();
   }
 
