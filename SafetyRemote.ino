@@ -1259,10 +1259,23 @@ void wifiScanTaskCode(void *pv) {
     if (wifiScanMutex) xSemaphoreGive(wifiScanMutex);
 
     Serial.println("  [WIFI] Bat dau quet mang (background)...");
+    // Portal SoftAP đang mở → giữ AP_STA để ĐT không mất 192.168.4.1 khi quét
+    if (portalApActive) {
+      wifi_mode_t m = WiFi.getMode();
+      if (m != WIFI_MODE_APSTA && m != WIFI_AP_STA) {
+        WiFi.mode(WIFI_AP_STA);
+        vTaskDelay(pdMS_TO_TICKS(80));
+      }
+    }
     WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
     WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     // Sync scan trong task riêng — không chặn HTTP SoftAP
     int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+    // Một số bản core trả 0 lần đầu khi SoftAP vừa bật — quét lại 1 lần
+    if (n <= 0) {
+      vTaskDelay(pdMS_TO_TICKS(300));
+      n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+    }
     if (n < 0) n = 0;
 
     struct Item { int idx; int rssi; };
@@ -1438,25 +1451,35 @@ void startPortalAP(const char *why) {
     Serial.printf("  [WIFI] SoftAP da mo (%s)\n", why ? why : "");
     return;
   }
+  // AP_STA: vừa phát SoftAP portal vừa giữ/quét WiFi nhà (bàn giao khách)
   WiFi.mode(WIFI_AP_STA);
-  delay(50);
+  delay(100);
   if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
     Serial.println("  [WIFI] softAPConfig() that bai");
   }
   bool ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
   if (!ok) {
-    delay(150);
+    delay(200);
     ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
   }
   portalApActive = ok;
   applyWifiMaxPower();
   if (ok) {
+    if (portalDnsStarted) {
+      dnsServer.stop();
+      portalDnsStarted = false;
+    }
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer.start(53, "*", local_IP);
     portalDnsStarted = true;
+    // Xóa cache quét cũ — lần mở portal phải quét WiFi mới quanh khách
+    if (wifiScanMutex && xSemaphoreTake(wifiScanMutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+      wifiScanResultJson = "{\"status\":\"idle\",\"networks\":[]}";
+      xSemaphoreGive(wifiScanMutex);
+    }
   }
-  Serial.printf("  [WIFI] SoftAP %s (%s) http://192.168.4.1/\n",
-                ok ? "ON" : "FAIL", why ? why : "");
+  Serial.printf("  [WIFI] SoftAP %s (%s) SSID=\"%s\" http://192.168.4.1/\n",
+                ok ? "ON" : "FAIL", why ? why : "", ap_ssid);
 }
 
 void stopPortalAP(const char *why) {
