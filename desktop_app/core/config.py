@@ -38,7 +38,7 @@ class AppConfig:
     APP_NAME = "Safety Remote Desktop"
     APP_VERSION = "1.0.7"
 
-    DEFAULT_HOST = "192.168.4.8"
+    DEFAULT_HOST = "192.168.4.1"
     WIFI_NAME = "Safety Remote"
     WIFI_PASSWORD = ""  # SoftAP mở — không mật khẩu
     DEFAULT_CHIP_ID = "888"

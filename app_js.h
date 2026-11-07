@@ -4,7 +4,7 @@
 // Auto-generated from web/app.js — application/javascript
 const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
 (() => {
-  const DEFAULT_HOST = "192.168.4.8";
+  const DEFAULT_HOST = "192.168.4.1";
   const WIFI_NAME = "Safety Remote";
   const POLL_MS = 1500;
   const STORAGE_KEY = "safety_remote_host";
@@ -89,9 +89,9 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
     return bad.indexOf(v) === -1 && !Number.isNaN(parseFloat(v));
   }
 
-  async function api(path, opts = {}) {
+  async function api(path, opts = {}, timeoutMs = 4000) {
     const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 4000);
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(`${baseUrl()}${path}`, {
         signal: ctrl.signal,
@@ -109,6 +109,166 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
       return await res.json();
     } finally {
       clearTimeout(t);
+    }
+  }
+
+  function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+  }
+
+  function escapeAttr(s) {
+    return String(s || "")
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;");
+  }
+
+  let lastStaToast = "";
+
+  function applyStaUi(d) {
+    const box = $("wifi-sta-status");
+    const banner = $("wifi-ok-banner");
+    if (!box) return;
+    const status = d.staStatus || (d.staConnected ? "Thành công" : "Chưa kết nối");
+    const detail = d.staDetail || "";
+    const ok = status.indexOf("Thành công") >= 0 || !!d.staConnected;
+    const fail = status.indexOf("Thất bại") >= 0;
+    const connecting = status.indexOf("Đang") >= 0;
+
+    setBadge(
+      $("badge-sta"),
+      ok ? "THÀNH CÔNG" : fail ? "THẤT BẠI" : connecting ? "ĐANG KẾT NỐI" : "CHƯA KẾT NỐI",
+      ok ? "ok" : fail ? "bad" : "warn"
+    );
+    box.className = "wifi-sta-box " + (ok ? "ok" : fail ? "bad" : connecting ? "warn" : "");
+    box.innerHTML =
+      `<div><b>${escapeAttr(status)}</b></div>` +
+      `<div>${escapeAttr(detail || ("Wi‑Fi: " + (d.staSsid || "(chưa)") + " · IP " + (d.staIp || "-")))}</div>` +
+      `<div style="margin-top:4px;opacity:.85">MQTT: <b>${d.mqttConnected ? "online" : "offline"}</b> · Chip ${escapeAttr(d.chipId || "?")}</div>`;
+
+    if (banner) {
+      if (ok) {
+        banner.textContent = detail || ("✅ Kết nối Wi‑Fi thành công: " + (d.staSsid || ""));
+        banner.classList.remove("hidden");
+      } else {
+        banner.classList.add("hidden");
+      }
+    }
+
+    if (ok && lastStaToast !== detail) {
+      lastStaToast = detail || status;
+      toast("✅ Kết nối Wi‑Fi thành công", true);
+    }
+  }
+
+  async function refreshWifiStatus() {
+    if (!$("wifi-sta-status")) return;
+    try {
+      const d = await api("/api/wifi", {}, 5000);
+      const chipEl = $("wifi-chip");
+      const ssidEl = $("wifi-ssid");
+      if (chipEl && document.activeElement !== chipEl) chipEl.value = d.chipId || "888";
+      if (ssidEl && !ssidEl.value && d.staSsid) ssidEl.value = d.staSsid;
+      applyStaUi(d);
+    } catch (_) {
+      setBadge($("badge-sta"), "LỖI", "bad");
+    }
+  }
+
+  async function scanWifiNetworks() {
+    const btn = $("btn-wifi-scan");
+    const list = $("wifi-scan-list");
+    if (!btn || !list) return;
+    btn.disabled = true;
+    btn.textContent = "Đang quét...";
+    list.textContent = "Đang quét mạng xung quanh…";
+    try {
+      // fresh=1 bắt đầu quét mới (task nền)
+      await api("/api/wifi/scan?fresh=1", {}, 8000);
+      let data = null;
+      for (let i = 0; i < 45; i++) {
+        await sleep(800);
+        data = await api("/api/wifi/scan", {}, 8000);
+        if (data && data.status === "done") break;
+        list.textContent = `Đang quét… (${i + 1})`;
+      }
+      const nets = (data && data.networks) || [];
+      if (!nets.length) {
+        list.textContent = "Không thấy mạng. Thử quét lại (đứng gần router).";
+      } else {
+        list.innerHTML = nets
+          .map((n) => {
+            const ssid = n.ssid || "";
+            const lock = n.secure ? "🔒 " : "";
+            return `<div class="wifi-net" data-ssid="${escapeAttr(ssid)}"><span>${lock}${escapeAttr(ssid)}</span><span class="rssi">${n.rssi} dBm</span></div>`;
+          })
+          .join("");
+        list.querySelectorAll(".wifi-net").forEach((el) => {
+          el.addEventListener("click", () => {
+            list.querySelectorAll(".wifi-net").forEach((x) => x.classList.remove("sel"));
+            el.classList.add("sel");
+            $("wifi-ssid").value = el.getAttribute("data-ssid") || "";
+            $("wifi-pass").focus();
+          });
+        });
+      }
+    } catch (e) {
+      list.textContent = e.message || "Quét lỗi — thử lại.";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "Quét lại Wi‑Fi";
+    }
+  }
+
+  async function saveWifiConfig() {
+    const ssid = ($("wifi-ssid").value || "").trim();
+    if (!ssid) {
+      toast("Chọn hoặc nhập tên Wi‑Fi", false);
+      return;
+    }
+    const btn = $("btn-wifi-save");
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Đang kết nối...";
+    }
+    lastStaToast = "";
+    try {
+      const body = new URLSearchParams({
+        ssid,
+        pass: $("wifi-pass").value || "",
+        chip: $("wifi-chip").value || "888",
+      });
+      await api(
+        "/api/wifi",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        },
+        8000
+      );
+      toast("Đã lưu — đang kết nối Wi‑Fi nhà...", true);
+      // Chờ GOT_IP / thất bại rồi báo rõ
+      for (let i = 0; i < 25; i++) {
+        await sleep(1000);
+        const d = await api("/api/wifi", {}, 5000);
+        applyStaUi(d);
+        if (d.staConnected || (d.staStatus && d.staStatus.indexOf("Thành công") >= 0)) {
+          toast("✅ Kết nối Wi‑Fi thành công", true);
+          break;
+        }
+        if (d.staStatus && d.staStatus.indexOf("Thất bại") >= 0 && i > 3) {
+          toast("Kết nối Wi‑Fi thất bại — kiểm tra mật khẩu", false);
+          break;
+        }
+      }
+    } catch (e) {
+      toast(e.message || "Không lưu được Wi‑Fi", false);
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = "Lưu & kết nối Wi‑Fi";
+      }
     }
   }
 
@@ -203,7 +363,11 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
     }
 
     $("wifi-meta").textContent =
-      `Wi‑Fi CH${data.wifiChannel ?? "?"} · ${data.wifiTxDbm ?? "--"}dBm · ${data.wifiClients ?? 0} ĐT`;
+      `SoftAP CH${data.wifiChannel ?? "?"} · ${data.wifiTxDbm ?? "--"}dBm · ${data.wifiClients ?? 0} ĐT` +
+      (data.staConnected ? ` · Nhà: ${data.staSsid || "OK"} ${data.staIp || ""}` : "");
+    if (data.staStatus || data.staConnected) {
+      applyStaUi(data);
+    }
 
     const btnGps = $("btn-gps");
     if (data.gpsPower) {
@@ -271,6 +435,7 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
     try {
       const data = await api("/api/sensors");
       render(data);
+      // Không gọi refreshWifiStatus mỗi poll để tránh đè form khi đang gõ
     } catch (e) {
       state.failCount += 1;
       state.live = false;
@@ -332,10 +497,16 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
         toast(e.message || "Không lưu được số nhận", false);
       }
     });
+    $("btn-wifi-scan").addEventListener("click", () => scanWifiNetworks());
+    $("btn-wifi-save").addEventListener("click", () => saveWifiConfig());
 
-    // Auto-connect nếu đang ở SoftAP cùng máy
-    if (location.protocol.startsWith("http") && location.hostname === "192.168.4.8") {
-      connect();
+    // SoftAP 192.168.4.1 → một trang duy nhất (dashboard + portal WiFi)
+    if (location.protocol.startsWith("http") && location.hostname === "192.168.4.1") {
+      connect().then(() => {
+        refreshWifiStatus();
+        scanWifiNetworks();
+        setInterval(refreshWifiStatus, 4000);
+      });
     } else {
       showConnect();
     }

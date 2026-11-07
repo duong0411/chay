@@ -1,4 +1,4 @@
-# Safety Remote App
+﻿# Safety Remote App
 
 App Flutter giám sát mạch **Safety Remote**: nhiệt/ẩm, gas, cháy, GPS, SMS.
 
@@ -18,10 +18,10 @@ Sau khi **Kết nối** (Gần máy hoặc MQTT):
 
 ### Gần máy
 1. Kết nối Wi‑Fi `Safety Remote` (không mật khẩu)
-2. App → **Gần máy** → `192.168.4.8`
+2. App → **Gần máy** → `192.168.4.1`
 
 ### Từ xa (MQTT)
-1. Cấu hình Wi‑Fi nhà + Chip ID trên `http://192.168.4.8/wifi`
+1. Cấu hình Wi‑Fi nhà + Chip ID trên `http://192.168.4.1/`
 2. App → **Từ xa** → Chip ID (mặc định `888`)
 
 Broker: `wss://mqtt.duynguyen.io.vn/mqtt`

@@ -1,7 +1,7 @@
 name: safety_remote_app
 description: Safety Remote - theo dõi gas, cháy, GPS, SMS; cảnh báo nền kiểu Shopee.
 publish_to: "none"
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.8.0

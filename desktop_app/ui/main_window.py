@@ -269,7 +269,7 @@ class MainWindow(QMainWindow):
             self.input.setPlaceholderText("Chip ID")
         else:
             self.input.setText(self.host or AppConfig.DEFAULT_HOST)
-            self.input.setPlaceholderText("IP SoftAP 192.168.4.8")
+            self.input.setPlaceholderText("IP SoftAP 192.168.4.1")
 
     def connect_device(self) -> None:
         mode = self.mode_box.currentData()

@@ -19,6 +19,7 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <WebServer.h>
+#include <DNSServer.h>
 #include <Preferences.h>
 #include <esp_adc_cal.h>
 #include <esp_wifi.h>
@@ -61,13 +62,31 @@ const char* ap_password = nullptr;
 // Kênh 1/6/11 ít chồng chéo hơn; đổi nếu môi trường nhiễu mạnh
 const int WIFI_AP_CHANNEL = 1;
 const int WIFI_AP_MAX_CLIENTS = 4;
-IPAddress local_IP(192, 168, 4, 8);
-IPAddress gateway(192, 168, 4, 8);
+// Portal SoftAP mặc định (bàn giao khách → vào lại Safety Remote để bắt WiFi mới)
+IPAddress local_IP(192, 168, 4, 1);
+IPAddress gateway(192, 168, 4, 1);
 IPAddress subnet(255, 255, 255, 0);
 
 WebServer server(80);
+DNSServer dnsServer;
 Preferences prefs;
 volatile uint8_t wifiStationCount = 0;
+volatile bool wifiScanRunning = false;
+volatile bool wifiScanRequest = false;
+String wifiScanResultJson = "{\"status\":\"idle\",\"networks\":[]}";
+SemaphoreHandle_t wifiScanMutex = NULL;
+
+// Trạng thái kết nối WiFi nhà (STA) — báo thành công trên portal
+String staConnStatus = "Chưa kết nối";   // Đang kết nối / Thành công / Thất bại
+String staConnDetail = "Chưa cấu hình Wi‑Fi nhà";
+uint32_t staConnOkMs = 0;
+
+// Forward decls (arduino-cli không luôn tự tạo prototype)
+String jsonEscape(const String &s);
+void readAndPrintAll();
+void handleCaptiveRedirect();
+void handleWifiScan();
+void wifiScanTaskCode(void *pv);
 
 bool eg800kPower = true;
 bool buzzerState = false;
@@ -1141,68 +1160,132 @@ String buildSensorJson() {
   json += "\"wifiChannel\":" + String(WIFI_AP_CHANNEL) + ",";
   json += "\"mqttConnected\":" + String(safetyMqttConnected() ? "true" : "false") + ",";
   json += "\"chipId\":\"" + String(getSafetyChipId()) + "\",";
-  json += "\"staIp\":\"" + safetyStaIp() + "\"";
+  json += "\"staIp\":\"" + safetyStaIp() + "\",";
+  json += "\"staSsid\":\"" + jsonEscape(String(getSafetyStaSsid())) + "\",";
+  json += "\"staConnected\":" + String(safetyStaConnected() ? "true" : "false") + ",";
+  json += "\"staStatus\":\"" + jsonEscape(staConnStatus) + "\",";
+  json += "\"staDetail\":\"" + jsonEscape(staConnDetail) + "\"";
   json += "}";
   return json;
 }
 
+void handleCaptiveRedirect() {
+  // Gộp portal + dashboard tại http://192.168.4.1/
+  server.sendHeader("Cache-Control", "no-cache");
+  server.sendHeader("Location", "http://192.168.4.1/", true);
+  server.send(302, "text/plain", "Redirect to portal");
+}
+
 void handleWifiPage() {
-  String html = R"html(
-<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Cau hinh WiFi / MQTT</title>
-<style>
-body{font-family:sans-serif;background:#0a0e17;color:#f8fafc;padding:20px;max-width:480px;margin:auto}
-input,button{width:100%;padding:12px;margin:8px 0;border-radius:10px;border:0;font-size:15px;box-sizing:border-box}
-input{background:#1c2638;color:#fff}
-button{background:#ff2a5f;color:#fff;font-weight:700}
-.card{background:#121928;padding:16px;border-radius:14px;margin-bottom:12px}
-.muted{color:#94a3b8;font-size:13px;line-height:1.45}
-</style></head><body>
-<h1>WiFi nha + MQTT</h1>
-<div class="card muted" id="st">Dang doc...</div>
-<div class="card">
-<input id="ssid" placeholder="Ten WiFi nha (SSID)">
-<input id="pass" placeholder="Mat khau WiFi nha" type="password">
-<input id="chip" placeholder="Chip ID (mac dinh 888)">
-<button onclick="save()">Luu & ket noi MQTT</button>
-</div>
-<p class="muted">1) Dien thoai vao SoftAP Safety Remote<br>2) Mo trang nay<br>3) Dien WiFi nha + Chip ID<br>4) Quay lai Internet, mo app chon Tu xa</p>
-<script>
-async function load(){
-  const d=await (await fetch('/api/wifi')).json();
-  document.getElementById('ssid').value=d.staSsid||'';
-  document.getElementById('chip').value=d.chipId||'888';
-  document.getElementById('st').innerText=
-    'Chip: '+(d.chipId||'?')+
-    '\nSTA: '+(d.staSsid||'(chua)')+
-    '\nIP nha: '+(d.staIp||'-')+
-    '\nMQTT: '+(d.mqttConnected?'online':'offline');
-}
-async function save(){
-  const body=new URLSearchParams({
-    ssid:document.getElementById('ssid').value,
-    pass:document.getElementById('pass').value,
-    chip:document.getElementById('chip').value
-  });
-  const r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body});
-  const d=await r.json();
-  alert(d.message||'OK');
-  load();
-}
-load(); setInterval(load,3000);
-</script></body></html>
-)html";
-  server.send(200, "text/html", html);
+  // Giữ /wifi → trang chính (một UI duy nhất)
+  handleCaptiveRedirect();
 }
 
 void handleWifiApiGet() {
   String json = "{";
   json += "\"chipId\":\"" + String(getSafetyChipId()) + "\",";
-  json += "\"staSsid\":\"" + String(getSafetyStaSsid()) + "\",";
+  json += "\"staSsid\":\"" + jsonEscape(String(getSafetyStaSsid())) + "\",";
   json += "\"staIp\":\"" + safetyStaIp() + "\",";
-  json += "\"mqttConnected\":" + String(safetyMqttConnected() ? "true" : "false");
+  json += "\"staConnected\":" + String(safetyStaConnected() ? "true" : "false") + ",";
+  json += "\"staStatus\":\"" + jsonEscape(staConnStatus) + "\",";
+  json += "\"staDetail\":\"" + jsonEscape(staConnDetail) + "\",";
+  json += "\"mqttConnected\":" + String(safetyMqttConnected() ? "true" : "false") + ",";
+  json += "\"portal\":\"http://192.168.4.1/\"";
   json += "}";
+  server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", json);
+}
+
+void wifiScanTaskCode(void *pv) {
+  (void)pv;
+  for (;;) {
+    while (!wifiScanRequest) {
+      vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    wifiScanRequest = false;
+    wifiScanRunning = true;
+    if (wifiScanMutex) xSemaphoreTake(wifiScanMutex, portMAX_DELAY);
+    wifiScanResultJson = "{\"status\":\"scanning\",\"networks\":[]}";
+    if (wifiScanMutex) xSemaphoreGive(wifiScanMutex);
+
+    Serial.println("  [WIFI] Bat dau quet mang (background)...");
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    // Sync scan trong task riêng — không chặn HTTP SoftAP
+    int n = WiFi.scanNetworks(/*async=*/false, /*hidden=*/true);
+    if (n < 0) n = 0;
+
+    struct Item { int idx; int rssi; };
+    Item items[48];
+    int count = 0;
+    for (int i = 0; i < n && count < 48; i++) {
+      if (WiFi.SSID(i).length() == 0) continue;
+      items[count].idx = i;
+      items[count].rssi = WiFi.RSSI(i);
+      count++;
+    }
+    for (int i = 0; i < count; i++) {
+      for (int j = i + 1; j < count; j++) {
+        if (items[j].rssi > items[i].rssi) {
+          Item t = items[i]; items[i] = items[j]; items[j] = t;
+        }
+      }
+    }
+    int outN = count > 24 ? 24 : count;
+    String json = "{\"status\":\"done\",\"count\":" + String(outN) + ",\"networks\":[";
+    for (int k = 0; k < outN; k++) {
+      int i = items[k].idx;
+      if (k) json += ",";
+      json += "{\"ssid\":\"" + jsonEscape(WiFi.SSID(i)) + "\",";
+      json += "\"rssi\":" + String(WiFi.RSSI(i)) + ",";
+      json += "\"secure\":" + String(WiFi.encryptionType(i) != WIFI_AUTH_OPEN ? "true" : "false") + "}";
+    }
+    json += "]}";
+    WiFi.scanDelete();
+
+    if (wifiScanMutex) xSemaphoreTake(wifiScanMutex, portMAX_DELAY);
+    wifiScanResultJson = json;
+    if (wifiScanMutex) xSemaphoreGive(wifiScanMutex);
+    wifiScanRunning = false;
+    Serial.printf("  [WIFI] Quet xong: %d mang\n", outN);
+  }
+}
+
+void handleWifiScan() {
+  server.sendHeader("Cache-Control", "no-store");
+  bool fresh = server.hasArg("fresh") && server.arg("fresh") == "1";
+
+  if (wifiScanRunning) {
+    server.send(200, "application/json", "{\"status\":\"scanning\",\"networks\":[]}");
+    return;
+  }
+
+  String cached;
+  if (wifiScanMutex && xSemaphoreTake(wifiScanMutex, pdMS_TO_TICKS(200)) == pdTRUE) {
+    cached = wifiScanResultJson;
+    xSemaphoreGive(wifiScanMutex);
+  } else {
+    cached = wifiScanResultJson;
+  }
+
+  // Có kết quả → trả về (poll)
+  if (!fresh && cached.indexOf("\"status\":\"done\"") >= 0) {
+    server.send(200, "application/json", cached);
+    return;
+  }
+
+  // Chỉ bắt đầu quét khi ?fresh=1
+  if (fresh) {
+    if (wifiScanMutex && xSemaphoreTake(wifiScanMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+      wifiScanResultJson = "{\"status\":\"scanning\",\"networks\":[]}";
+      xSemaphoreGive(wifiScanMutex);
+    }
+    wifiScanRequest = true;
+    server.send(200, "application/json", "{\"status\":\"scanning\",\"networks\":[]}");
+    return;
+  }
+
+  server.send(200, "application/json", cached.length() ? cached : "{\"status\":\"idle\",\"networks\":[]}");
 }
 
 void handleWifiApiPost() {
@@ -1220,12 +1303,15 @@ void handleWifiApiPost() {
     return;
   }
   safetySaveWifiPrefs(ssid, pass, chip);
+  staConnStatus = "Đang kết nối";
+  staConnDetail = "Đang kết nối tới " + ssid + "...";
   WiFi.disconnect(false);
   delay(100);
   safetyTryStaConnect(true);
+  // SoftAP portal vẫn mở — khách sau này vào lại Safety Remote để đổi WiFi
   server.send(200, "application/json",
-    "{\"success\":true,\"message\":\"Da luu WiFi nha & Chip ID. Dang ket noi MQTT...\",\"chipId\":\"" +
-    String(getSafetyChipId()) + "\"}");
+    "{\"success\":true,\"message\":\"Đã lưu. Đang kết nối Wi‑Fi nhà...\",\"staStatus\":\"Đang kết nối\",\"chipId\":\"" +
+    String(getSafetyChipId()) + "\",\"portal\":\"http://192.168.4.1/\"}");
 }
 
 String jsonEscape(const String &s) {
@@ -1258,17 +1344,20 @@ String jsonEscape(const String &s) {
 #include "app_js.h"
 
 void handleRoot() {
-  server.sendHeader("Cache-Control", "no-cache");
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
   server.send_P(200, "text/html; charset=utf-8", HTML_CONTENT);
 }
 
 void handleStyleCss() {
-  server.sendHeader("Cache-Control", "no-cache");
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
   server.send_P(200, "text/css; charset=utf-8", STYLE_CSS_CONTENT);
 }
 
 void handleAppJs() {
-  server.sendHeader("Cache-Control", "no-cache");
+  server.sendHeader("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+  server.sendHeader("Pragma", "no-cache");
   server.send_P(200, "application/javascript; charset=utf-8", APP_JS_CONTENT);
 }
 
@@ -1280,13 +1369,38 @@ void onWifiEvent(WiFiEvent_t event) {
   switch (event) {
     case ARDUINO_EVENT_WIFI_AP_STACONNECTED:
       wifiStationCount = WiFi.softAPgetStationNum();
-      Serial.print("  [WIFI] DT/STA da ket noi. So client: ");
+      Serial.print("  [WIFI] DT SoftAP ket noi. So client: ");
       Serial.println(wifiStationCount);
       break;
     case ARDUINO_EVENT_WIFI_AP_STADISCONNECTED:
       wifiStationCount = WiFi.softAPgetStationNum();
-      Serial.print("  [WIFI] DT/STA ngat ket noi. So client: ");
+      Serial.print("  [WIFI] DT SoftAP ngat. So client: ");
       Serial.println(wifiStationCount);
+      break;
+    case ARDUINO_EVENT_WIFI_STA_START:
+      break;
+    case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+      staConnStatus = "Đang kết nối";
+      staConnDetail = String("Đã gắn AP ") + WiFi.SSID() + " — đang lấy IP...";
+      Serial.println("  [WIFI] STA connected, waiting DHCP...");
+      break;
+    case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+      staConnStatus = "Thành công";
+      staConnDetail = String("✅ Kết nối thành công: ") + WiFi.SSID() +
+                      " · IP " + WiFi.localIP().toString();
+      staConnOkMs = millis();
+      Serial.print("  [WIFI] STA THANH CONG IP=");
+      Serial.println(WiFi.localIP());
+      break;
+    case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+      if (safetyHasStaConfig()) {
+        // Không ghi đè ngay sau GOT_IP (một số bản core bắn disconnect ngắn)
+        if (staConnStatus == "Thành công" && (millis() - staConnOkMs) < 3000) break;
+        staConnStatus = "Thất bại";
+        staConnDetail = String("Không kết nối được \"") + String(getSafetyStaSsid()) +
+                        "\". Kiểm tra mật khẩu / sóng rồi thử lại.";
+        Serial.println("  [WIFI] STA disconnect / fail");
+      }
       break;
     default:
       break;
@@ -1330,7 +1444,11 @@ void setupWiFi() {
   WiFi.mode(WIFI_AP_STA);
   delay(50);
 
-  // softAP trước, softAPConfig sau — ổn định hơn trên Arduino-ESP32 mới
+  // IP portal trước, rồi softAP
+  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
+    Serial.println("  [WIFI] softAPConfig() that bai, dung IP mac dinh.");
+  }
+
   bool ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
   if (!ok) {
     Serial.println("  [WIFI] softAP() THAT BAI — thu lai...");
@@ -1338,12 +1456,11 @@ void setupWiFi() {
     ok = WiFi.softAP(ap_ssid, ap_password, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CLIENTS);
   }
 
-  // IP tĩnh cho AP (điện thoại vào http://192.168.4.8)
-  if (!WiFi.softAPConfig(local_IP, gateway, subnet)) {
-    Serial.println("  [WIFI] softAPConfig() that bai, dung IP mac dinh.");
-  }
-
   applyWifiMaxPower();
+
+  // Captive portal: mọi DNS → 192.168.4.1 (popup đăng nhập WiFi trên ĐT)
+  dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+  dnsServer.start(53, "*", local_IP);
 
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("  [WIFI] SSID: ");
@@ -1368,10 +1485,28 @@ void setupWiFi() {
   server.on("/api/smsNumbers", HTTP_POST, handleSmsNumbersPost);
   server.on("/api/wifi", HTTP_GET, handleWifiApiGet);
   server.on("/api/wifi", HTTP_POST, handleWifiApiPost);
+  server.on("/api/wifi/scan", HTTP_GET, handleWifiScan);
+
+  // Captive portal probes → trang cấu hình WiFi
+  server.on("/generate_204", handleCaptiveRedirect);
+  server.on("/gen_204", handleCaptiveRedirect);
+  server.on("/hotspot-detect.html", handleCaptiveRedirect);
+  server.on("/library/test/success.html", handleCaptiveRedirect);
+  server.on("/connecttest.txt", handleCaptiveRedirect);
+  server.on("/ncsi.txt", handleCaptiveRedirect);
+  server.on("/fwlink", handleCaptiveRedirect);
+  server.on("/canonical.html", handleCaptiveRedirect);
+  server.on("/success.txt", handleCaptiveRedirect);
+  server.onNotFound([]() {
+    if (server.method() == HTTP_GET) {
+      handleCaptiveRedirect();
+    } else {
+      server.send(404, "text/plain", "Not found");
+    }
+  });
 
   server.begin();
-  Serial.println("  [WIFI] HTTP Server started — mo http://192.168.4.8 tren DT");
-  Serial.println("  [WIFI] Cau hinh MQTT  — http://192.168.4.8/wifi");
+  Serial.println("  [WIFI] Portal+Dashboard — http://192.168.4.1/");
 }
 
 // ==================================================================================
@@ -1414,9 +1549,10 @@ void setup() {
   // MQTT từ xa (cần cấu hình WiFi nhà tại /wifi)
   initSafetyMqtt();
 
-  // Khởi tạo hàng đợi và khóa Mutex cho GPS / SMS không chặn Web
+  // Khởi tạo hàng đợi và khóa Mutex cho GPS / SMS / WiFi scan không chặn Web
   smsQueue = xQueueCreate(10, sizeof(SmsMessage));
   serialMutex = xSemaphoreCreateMutex();
+  wifiScanMutex = xSemaphoreCreateMutex();
   if (smsQueue != NULL) {
     xTaskCreate(
       smsTaskCode,
@@ -1428,13 +1564,26 @@ void setup() {
     );
     Serial.println("  [SYSTEM] Da khoi tao background SMS task va queue.");
   }
+  xTaskCreate(wifiScanTaskCode, "WifiScan", 8192, NULL, 1, NULL);
+  Serial.println("  [SYSTEM] Da khoi tao background WiFi scan task.");
+
+  if (safetyStaConnected()) {
+    staConnStatus = "Thành công";
+    staConnDetail = String("✅ Kết nối thành công: ") + WiFi.SSID() +
+                    " · IP " + WiFi.localIP().toString();
+    staConnOkMs = millis();
+  } else if (safetyHasStaConfig()) {
+    staConnStatus = "Đang kết nối";
+    staConnDetail = String("Đang kết nối tới ") + String(getSafetyStaSsid()) + "...";
+  }
 }
 
 // ==================================================================================
 // 5. VÒNG LẶP CHÍNH (LOOP)
 // ==================================================================================
 void loop() {
-  // MQTT + STA (không chặn SoftAP)
+  // Captive DNS + MQTT + STA (SoftAP portal luôn mở để đổi WiFi)
+  dnsServer.processNextRequest();
   handleMqttClient();
 
   // Phục vụ HTTP ưu tiên — gọi nhiều lần mỗi vòng để DT không bị treo khi GPS/SMS bận

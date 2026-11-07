@@ -1,4 +1,4 @@
-# Safety Remote Desktop (Windows · PyQt5)
+﻿# Safety Remote Desktop (Windows · PyQt5)
 
 Giao diện laptop giám sát mạch **Safety Remote** + **2 camera AI nhận diện cháy** (YOLO → OpenVINO).
 
@@ -24,7 +24,7 @@ py -3.12 main.py
 | Mode | Cách dùng |
 |------|-----------|
 | **Từ xa (MQTT)** | Chip ID (mặc định `888`), broker `wss://mqtt.duynguyen.io.vn/mqtt` |
-| **Gần máy** | Vào Wi‑Fi `Safety Remote` (không mật khẩu) → IP `192.168.4.8` |
+| **Gần máy** | Vào Wi‑Fi `Safety Remote` (không mật khẩu) → IP `192.168.4.1` |
 
 ## Camera AI → cảnh báo điện thoại (MQTT)
 

@@ -3,7 +3,7 @@
 
 // Auto-generated from web/index.html — text/html
 const char HTML_CONTENT[] PROGMEM = R"rawliteral(
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="vi">
 <head>
   <meta charset="UTF-8" />
@@ -12,7 +12,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
   <title>Safety Remote</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;700;800&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/style.css?v=3" />
 </head>
 <body>
   <div id="app">
@@ -32,7 +32,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
         </div>
 
         <label class="field-label">Địa chỉ máy</label>
-        <input id="host-input" class="field" type="url" autocomplete="off" spellcheck="false" value="192.168.4.8" />
+        <input id="host-input" class="field" type="url" autocomplete="off" spellcheck="false" value="192.168.4.1" />
         <p id="connect-status" class="status-line">Chưa kết nối</p>
 
         <button id="btn-connect" class="btn btn-primary" type="button">Kết nối gần</button>
@@ -53,6 +53,24 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
       </header>
 
       <div id="alarm-banner" class="alarm hidden"></div>
+      <div id="wifi-ok-banner" class="wifi-ok hidden">✅ Kết nối Wi‑Fi thành công</div>
+
+      <article class="card wifi-portal" id="wifi-portal-card">
+        <div class="card-head">
+          <span>1. Portal Wi‑Fi nhà</span>
+          <span class="badge" id="badge-sta">--</span>
+        </div>
+        <div id="wifi-sta-status" class="wifi-sta-box">Đang đọc trạng thái Wi‑Fi…</div>
+        <button id="btn-wifi-scan" class="btn btn-ghost" type="button">Quét Wi‑Fi xung quanh</button>
+        <div id="wifi-scan-list" class="wifi-scan-list muted">Bấm Quét để hiện mạng.</div>
+        <label class="field-label" for="wifi-ssid">Tên Wi‑Fi (SSID)</label>
+        <input id="wifi-ssid" class="field" type="text" autocomplete="off" spellcheck="false" placeholder="Chọn từ danh sách hoặc gõ tay" />
+        <label class="field-label" for="wifi-pass">Mật khẩu Wi‑Fi</label>
+        <input id="wifi-pass" class="field" type="password" autocomplete="off" placeholder="Để trống nếu Wi‑Fi mở" />
+        <label class="field-label" for="wifi-chip">Chip ID (MQTT từ xa)</label>
+        <input id="wifi-chip" class="field" type="text" autocomplete="off" value="888" />
+        <button id="btn-wifi-save" class="btn btn-primary" type="button">Lưu &amp; kết nối Wi‑Fi</button>
+      </article>
 
       <div class="grid2">
         <article class="tile" id="tile-volt">
@@ -112,7 +130,7 @@ const char HTML_CONTENT[] PROGMEM = R"rawliteral(
     </section>
   </div>
   <div id="toast" class="toast hidden"></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=3"></script>
 </body>
 </html>
 )rawliteral";

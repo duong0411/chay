@@ -1,4 +1,4 @@
-# Safety Remote Web App
+﻿# Safety Remote Web App
 
 Giao diện web theo phong cách app **Smart First AID** (màn hình Kết nối → Dashboard).
 
@@ -17,7 +17,7 @@ Giao diện web theo phong cách app **Smart First AID** (màn hình Kết nối
 2. Chạy: `python web/_gen_headers.py`
 3. Flash lại `SafetyRemote.ino`
 4. Điện thoại vào Wi‑Fi `Safety Remote` (không mật khẩu)
-5. Mở `http://192.168.4.8`
+5. Mở `http://192.168.4.1`
 
 ## API mạch
 

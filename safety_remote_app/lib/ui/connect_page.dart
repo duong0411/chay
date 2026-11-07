@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 import 'package:provider/provider.dart';
 
@@ -146,7 +146,7 @@ class _ConnectPageState extends State<ConnectPage> {
                               SizedBox(height: 8),
                               Text(
                                 '1. Vào SoftAP Safety Remote\n'
-                                '2. Mở http://192.168.4.8/wifi\n'
+                                '2. Mở http://192.168.4.1/\n'
                                 '3. Điền Wi‑Fi nhà + Chip ID (mặc định 888)\n'
                                 '4. Quay lại Internet thường, mở app, bấm Kết nối',
                                 style: TextStyle(height: 1.45, color: SafetyTheme.muted),

@@ -1,4 +1,4 @@
-# chay — Safety Remote
+﻿# chay — Safety Remote
 
 ESP32 **Safety Remote** (cháy / gas / GPS / SMS) + app Flutter giám sát mobile.
 
@@ -10,7 +10,7 @@ ESP32 **Safety Remote** (cháy / gas / GPS / SMS) + app Flutter giám sát mobil
 - Cảm biến cháy GPIO26
 - Còi GPIO25
 - EG800K LTE/GPS
-- SoftAP `Safety Remote` (mở, không mật khẩu) → `http://192.168.4.8`
+- SoftAP `Safety Remote` (mở, không mật khẩu) → portal+dashboard `http://192.168.4.1/`
 - MQTT WSS: `mqtt.duynguyen.io.vn/mqtt`
 
 Nạp `SafetyRemote.ino` (cần WebSockets Links2004 + MQTTPubSubClient).

@@ -172,6 +172,54 @@ body {
   line-height: 1.4;
 }
 #sms-card .btn-ghost { width: 100%; margin-bottom: 4px; }
+#wifi-portal-card.wifi-portal {
+  border: 1px solid rgba(56,189,248,0.35);
+  box-shadow: 0 0 0 1px rgba(56,189,248,0.08);
+}
+#wifi-portal-card .btn-ghost,
+#wifi-portal-card .btn-primary { width: 100%; margin-top: 8px; }
+#wifi-portal-card .field { margin-bottom: 4px; }
+.wifi-sta-box {
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  font-size: 13px;
+  line-height: 1.45;
+  font-weight: 600;
+}
+.wifi-sta-box.ok { background: rgba(16,185,129,0.14); color: #6ee7b7; }
+.wifi-sta-box.bad { background: rgba(239,68,68,0.14); color: #fca5a5; }
+.wifi-sta-box.warn { background: rgba(255,159,28,0.14); color: #fdba74; }
+.wifi-ok {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(16,185,129,0.18);
+  color: #6ee7b7;
+  font-weight: 800;
+  font-size: 14px;
+}
+.wifi-scan-list {
+  max-height: 220px;
+  overflow: auto;
+  margin: 8px 0 10px;
+  min-height: 36px;
+}
+.wifi-net {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.04);
+  margin: 6px 0;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+}
+.wifi-net.sel { outline: 2px solid var(--cyan); }
+.wifi-net .rssi { color: var(--muted); font-weight: 600; white-space: nowrap; }
 
 .actions {
   display: grid;

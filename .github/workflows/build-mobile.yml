@@ -3,7 +3,7 @@ name: Build APK & IPA
 on:
   push:
     branches: [main, master]
-    tags: ['v*']
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -44,16 +44,21 @@ jobs:
       - name: Build release APK
         run: flutter build apk --release
 
-      - name: Upload APK
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp build/app/outputs/flutter-apk/app-release.apk \
+            "dist/SafetyRemote-${{ github.ref_name }}.apk"
+
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: safety-remote-apk
-          path: safety_remote_app/build/app/outputs/flutter-apk/app-release.apk
+          path: safety_remote_app/dist/SafetyRemote-*.apk
           if-no-files-found: error
 
   ios-ipa:
     name: iOS IPA
-    # macos-latest tránh cancel sớm khi macos-14 không được cấp runner
     runs-on: macos-latest
     timeout-minutes: 60
     steps:
@@ -74,18 +79,19 @@ jobs:
 
       - name: Pack unsigned IPA
         run: |
-          mkdir -p build/ios/ipa_payload/Payload
+          mkdir -p build/ios/ipa_payload/Payload dist
           cp -R build/ios/iphoneos/Runner.app build/ios/ipa_payload/Payload/
           (
             cd build/ios/ipa_payload
-            zip -qr ../SafetyRemote-unsigned.ipa Payload
+            zip -qr "../SafetyRemote-${{ github.ref_name }}-unsigned.ipa" Payload
           )
+          cp "build/ios/SafetyRemote-${{ github.ref_name }}-unsigned.ipa" dist/
 
-      - name: Upload unsigned IPA
+      - name: Upload unsigned IPA artifact
         uses: actions/upload-artifact@v4
         with:
           name: safety-remote-ipa-unsigned
-          path: safety_remote_app/build/ios/SafetyRemote-unsigned.ipa
+          path: safety_remote_app/dist/SafetyRemote-*-unsigned.ipa
           if-no-files-found: error
 
       - name: Decode signing material
@@ -116,10 +122,59 @@ jobs:
         if: steps.signing.outputs.ready == 'true'
         run: flutter build ipa --release
 
-      - name: Upload signed IPA
+      - name: Upload signed IPA artifact
         if: steps.signing.outputs.ready == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: safety-remote-ipa-signed
           path: safety_remote_app/build/ios/ipa/*.ipa
           if-no-files-found: warn
+
+  github-release:
+    name: GitHub Release
+    needs: [android-apk, ios-ipa]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download APK
+        uses: actions/download-artifact@v4
+        with:
+          name: safety-remote-apk
+          path: release-assets
+
+      - name: Download unsigned IPA
+        uses: actions/download-artifact@v4
+        with:
+          name: safety-remote-ipa-unsigned
+          path: release-assets
+
+      - name: Download signed IPA (optional)
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: safety-remote-ipa-signed
+          path: release-assets
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Safety Remote ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: release-assets/*
+          body: |
+            ## Safety Remote ${{ github.ref_name }}
+
+            ### Tải về
+            - **Android:** `SafetyRemote-${{ github.ref_name }}.apk`
+            - **iOS (unsigned):** `SafetyRemote-${{ github.ref_name }}-unsigned.ipa` (cần ký trước khi cài lên máy thật)
+
+            ### Ghi chú
+            - SoftAP portal: `http://192.168.4.1/`
+            - MQTT từ xa: `wss://mqtt.duynguyen.io.vn/mqtt`
+            - Module EG800K cần SIM 4G để gửi SMS
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

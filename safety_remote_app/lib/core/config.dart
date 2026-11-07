@@ -1,6 +1,6 @@
-/// SoftAP gần máy hoặc MQTT từ xa (cùng broker LenMen / First AID).
+﻿/// SoftAP gần máy hoặc MQTT từ xa (cùng broker LenMen / First AID).
 class AppConfig {
-  static const String defaultHost = '192.168.4.8';
+  static const String defaultHost = '192.168.4.1';
   static const String wifiName = 'Safety Remote';
   static const String wifiPassword = ''; // SoftAP mở — không mật khẩu
   static const String deviceName = 'Safety Remote';
