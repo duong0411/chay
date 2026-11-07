@@ -246,7 +246,7 @@ class _BgRunner {
     await alerts.handleSensorAlerts(
       fireAlert: fire,
       gasAlert: false,
-      detail: label,
+      detail: fire ? 'Báo cháy · $label' : label,
     );
 
     final android = service is AndroidServiceInstance
@@ -255,7 +255,7 @@ class _BgRunner {
     if (android != null) {
       await android.setForegroundNotificationInfo(
         title: 'Safety Remote đang giám sát',
-        content: fire ? '🔥 $label' : 'Camera AI · an toàn',
+        content: fire ? 'Báo cháy · Camera AI' : 'Camera AI · an toàn',
       );
     }
     service.invoke('vision', map);
@@ -268,11 +268,16 @@ class _BgRunner {
     final temp = map['temp'];
     final gasVal = map['gas'];
 
-    final detail = [
-      if (fire) 'Cảm biến cháy GPIO26',
-      if (gas) 'Gas/khói: $gasVal',
-      if (temp != null) 'Nhiệt: $temp°C',
-    ].join(' · ');
+    final String detail;
+    if (fire && gas) {
+      detail = 'Hỏa hoạn cháy to · Gas $gasVal';
+    } else if (fire) {
+      detail = 'Báo cháy · cảm biến';
+    } else if (gas) {
+      detail = 'Có khói · Gas $gasVal';
+    } else {
+      detail = temp != null ? 'Nhiệt: $temp°C' : 'An toàn';
+    }
 
     await alerts.handleSensorAlerts(
       fireAlert: fire,

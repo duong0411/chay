@@ -118,9 +118,9 @@ class MqttService:
             ensure_ascii=False,
         )
         self.publish(AppConfig.topic_vision(self._chip), payload, retain=True)
-        # Bật còi trên mạch khi vừa phát hiện (edge do caller quyết định)
-        if fire and sound_buzzer:
-            self.publish(AppConfig.cmnd_buzzer(self._chip), "ON")
+        # Còi trên mạch: ON khi camera thấy lửa, OFF khi hết (firmware giữ gas/GPIO nếu còn)
+        if sound_buzzer:
+            self.publish(AppConfig.cmnd_buzzer(self._chip), "ON" if fire else "OFF")
         return True
 
     def ensure_connected(self, chip_id: str | None = None) -> bool:
@@ -133,7 +133,11 @@ class MqttService:
         self.publish(AppConfig.cmnd_buzzer(self._chip), "TOGGLE")
 
     def toggle_gps(self) -> None:
-        self.publish(AppConfig.cmnd_gps(self._chip), "TOGGLE")
+        # Định vị luôn bật
+        self.publish(AppConfig.cmnd_gps(self._chip), "ON")
+
+    def ensure_gps_on(self) -> None:
+        self.publish(AppConfig.cmnd_gps(self._chip), "ON")
 
     def send_test_sms(self) -> None:
         self.publish(AppConfig.cmnd_sms(self._chip), "ON")

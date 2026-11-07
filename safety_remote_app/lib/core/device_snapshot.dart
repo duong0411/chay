@@ -52,16 +52,15 @@ class DeviceSnapshot {
   final String visionLabel;
 
   bool get shtOk => temp > -900;
-  bool get alarmActive => gasAlert || fireAlert || visionFire;
+  bool get blazeAlert => fireAlert || visionFire;
+  bool get alarmActive => gasAlert || blazeAlert;
 
+  /// Khói → Có khói · Camera/GPIO lửa → Báo cháy · Cả hai → Hỏa hoạn cháy to
   String get alarmLabel {
-    final parts = <String>[];
-    if (fireAlert) parts.add('Phát hiện cháy');
-    if (visionFire) {
-      parts.add(visionLabel.isEmpty ? 'Camera AI phát hiện lửa' : visionLabel);
-    }
-    if (gasAlert) parts.add('Rò gas/khói');
-    return parts.isEmpty ? 'An toàn' : parts.join(' · ');
+    if (gasAlert && blazeAlert) return 'Hỏa hoạn cháy to';
+    if (blazeAlert) return 'Báo cháy';
+    if (gasAlert) return 'Có khói';
+    return 'An toàn';
   }
 
   DeviceSnapshot withVision({required bool fire, String label = ''}) {

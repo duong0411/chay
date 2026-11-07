@@ -156,10 +156,10 @@ class HomePage extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _MetricTile(
-                        label: 'Gas / Khói',
+                        label: 'Khói / Gas / CO',
                         value: '${data.gas}',
                         unit: '',
-                        detail: data.gasAlert ? 'CẢNH BÁO' : 'An toàn · /4095',
+                        detail: data.gasAlert ? 'CÓ KHÓI' : 'An toàn · /4095',
                         icon: Icons.cloud_rounded,
                         color: SafetyTheme.pulse,
                         alert: data.gasAlert,
@@ -169,14 +169,14 @@ class HomePage extends StatelessWidget {
                     Expanded(
                       child: _MetricTile(
                         label: 'Báo cháy',
-                        value: (data.fireAlert || data.visionFire) ? 'CHÁY' : 'OK',
+                        value: data.blazeAlert ? 'CHÁY' : 'OK',
                         unit: '',
                         detail: data.visionFire
-                            ? 'AI Camera · MQTT'
-                            : 'GPIO26 · Signal',
+                            ? 'Camera AI phát hiện lửa'
+                            : (data.fireAlert ? 'Cảm biến cháy' : 'GPIO26 · Signal'),
                         icon: Icons.local_fire_department_rounded,
                         color: SafetyTheme.pulse,
-                        alert: data.fireAlert || data.visionFire,
+                        alert: data.blazeAlert,
                       ),
                     ),
                   ],
@@ -201,10 +201,14 @@ class HomePage extends StatelessWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: _ActionButton(
-                        label: data.gpsPower ? 'Tắt SIM/GPS' : 'Bật SIM/GPS',
+                        label: 'Định vị: LUÔN BẬT',
                         icon: Icons.satellite_alt_rounded,
                         color: SafetyTheme.cyan,
-                        onTap: () => _act(context, device.toggleGps),
+                        onTap: () => _act(
+                          context,
+                          device.ensureGpsOn,
+                          ok: 'Đã giữ GPS luôn bật',
+                        ),
                       ),
                     ),
                   ],

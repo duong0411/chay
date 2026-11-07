@@ -139,6 +139,7 @@ class MonitorProvider extends ChangeNotifier {
     await _hosts.writeMode(ConnectMode.mqtt);
     _mqttSub?.cancel();
     _mqttSub = _mqtt.messages.listen(_onMqtt);
+    _mqtt.ensureGpsOn();
     await _startBackground();
     connecting = false;
     entered = true;
@@ -199,9 +200,12 @@ class MonitorProvider extends ChangeNotifier {
     await refresh();
   }
 
-  Future<void> toggleGps() async {
+  Future<void> toggleGps() async => ensureGpsOn();
+
+  /// Định vị luôn bật — app không tắt GPS/SIM.
+  Future<void> ensureGpsOn() async {
     if (isMqtt) {
-      _mqtt.toggleGps();
+      _mqtt.ensureGpsOn();
       return;
     }
     await _api.toggleGps(host);

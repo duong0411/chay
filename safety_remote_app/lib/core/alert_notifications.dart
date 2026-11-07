@@ -112,10 +112,14 @@ class AlertNotifications {
 
     if (!fireRise && !gasRise) return;
 
-    final parts = <String>[];
-    if (fireAlert) parts.add('PHÁT HIỆN CHÁY');
-    if (gasAlert) parts.add('RÒ GAS / KHÓI');
-    final title = parts.join(' · ');
+    final String title;
+    if (fireAlert && gasAlert) {
+      title = 'HỎA HOẠN CHÁY TO';
+    } else if (fireAlert) {
+      title = 'BÁO CHÁY';
+    } else {
+      title = 'CÓ KHÓI';
+    }
     final body = (detail == null || detail.isEmpty)
         ? 'Mở Safety Remote ngay để kiểm tra thiết bị.'
         : detail;

@@ -101,6 +101,8 @@ void mqttApplyPortalCommand(const String &raw);
 
 bool eg800kPower = true;
 bool buzzerState = false;
+// Camera AI (desktop MQTT buzzer ON) — checkAlerts không được tắt còi khi chỉ có lửa camera
+bool cameraFireHold = false;
 bool streamMode = true;
 unsigned long lastStreamTime = 0;
 const unsigned long STREAM_INTERVAL = 2000; // Gửi dữ liệu định kỳ mỗi 2 giây
@@ -751,39 +753,70 @@ void appendGpsToMessage(String &msg) {
   }
 }
 
+// Mức cảnh báo thống nhất: khói / cháy / hỏa hoạn
+String buildAlarmLabel(bool gasAlert, bool fireAlert, bool cameraFire) {
+  const bool blaze = fireAlert || cameraFire;
+  if (gasAlert && blaze) return String("Hỏa hoạn cháy to");
+  if (blaze) return String("Báo cháy");
+  if (gasAlert) return String("Có khói");
+  return String("An toàn");
+}
+
 void checkAlerts() {
   // 1. Đọc cảm biến nhiệt độ & độ ẩm
   float temp = 0, hum = 0;
   bool shtOk = readSHT31(temp, hum);
 
-  // 2. Đọc cảm biến Gas MQ-2
+  // 2. Đọc cảm biến Gas MQ-2 (khói / CO / LPG…)
   int rawGas = 0;
   bool gasAlert = false;
   readMQ2(rawGas, gasAlert);
 
-  // 3. Đọc cảm biến báo cháy
+  // 3. Đọc cảm biến báo cháy GPIO + giữ còi nếu camera AI đang báo
   bool fireAlert = readFireSensor();
+  bool blaze = fireAlert || cameraFireHold;
 
-  // Còi kêu khi có gas hoặc cháy; tắt khi hết cả hai
-  setBuzzer(gasAlert || fireAlert);
+  // Còi kêu: có khói, có cháy (GPIO/camera), hoặc hỏa hoạn (cả hai)
+  setBuzzer(gasAlert || blaze);
 
   // SMS chỉ gửi khi module SIM đang bật
   if (eg800kPower) {
-    // Cảnh báo Gas
-    if (gasAlert && !lastGasAlert) {
+    const bool disaster = gasAlert && blaze;
+    const bool gasRise = gasAlert && !lastGasAlert;
+    const bool fireRise = blaze && !lastFireAlert;
+
+    if (disaster && (gasRise || fireRise)) {
+      if (lastFireSmsTime == 0 || (millis() - lastFireSmsTime >= SMS_COOLDOWN_MS)) {
+        String msg = "[HOA HOAN] Co khoi + chay! Gas: " + String(rawGas) + "/4095.";
+        appendGpsToMessage(msg);
+        send_sms_to_target(msg);
+        lastFireSmsTime = millis();
+        lastGasSmsTime = millis();
+      }
+    } else if (gasRise && !blaze) {
       if (lastGasSmsTime == 0 || (millis() - lastGasSmsTime >= SMS_COOLDOWN_MS)) {
-        String msg = "[CANH BAO] Phat hien ro ri Gas/Khoi! Gas: " + String(rawGas) + "/4095.";
+        String msg = "[CO KHOI] Phat hien khoi/gas/CO! Gas: " + String(rawGas) + "/4095.";
         appendGpsToMessage(msg);
         send_sms_to_target(msg);
         lastGasSmsTime = millis();
       } else {
-        Serial.println("  [Anti-Spam SMS] Canh bao Gas bi chan do trong thoi gian cooldown.");
+        Serial.println("  [Anti-Spam SMS] Canh bao khoi bi chan (cooldown).");
+      }
+    } else if (fireRise && !gasAlert) {
+      if (lastFireSmsTime == 0 || (millis() - lastFireSmsTime >= SMS_COOLDOWN_MS)) {
+        String msg = cameraFireHold && !fireAlert
+                         ? String("[BAO CHAY] Camera AI phat hien lua!")
+                         : String("[BAO CHAY] Cam bien chay phat hien lua!");
+        appendGpsToMessage(msg);
+        send_sms_to_target(msg);
+        lastFireSmsTime = millis();
+      } else {
+        Serial.println("  [Anti-Spam SMS] Canh bao chay bi chan (cooldown).");
       }
     }
 
     // Cảnh báo Nhiệt độ
     if (shtOk) {
-      // Trễ Hysteresis: bật > 40.0, tắt < 38.0
       bool tempAlert = lastTempAlert;
       if (temp > 40.0) {
         tempAlert = true;
@@ -803,22 +836,10 @@ void checkAlerts() {
       }
       lastTempAlert = tempAlert;
     }
-
-    // Cảnh báo cháy
-    if (fireAlert && !lastFireAlert) {
-      if (lastFireSmsTime == 0 || (millis() - lastFireSmsTime >= SMS_COOLDOWN_MS)) {
-        String msg = "[CANH BAO] Phat hien CHAY!";
-        appendGpsToMessage(msg);
-        send_sms_to_target(msg);
-        lastFireSmsTime = millis();
-      } else {
-        Serial.println("  [Anti-Spam SMS] Canh bao Chay bi chan do trong thoi gian cooldown.");
-      }
-    }
   }
 
   lastGasAlert = gasAlert;
-  lastFireAlert = fireAlert;
+  lastFireAlert = blaze;
 }
 
 // Chuyển ddmm.mmmmN/S hoặc dddmm.mmmmE/W sang độ thập phân (nếu module trả format 0)
@@ -1036,8 +1057,10 @@ void updateGPSData() {
 }
 
 void handleToggleGps() {
-  setEG800KPower(!eg800kPower);
-  server.send(200, "application/json", "{\"success\":true}");
+  // Định vị luôn bật — không cho tắt qua API
+  if (!eg800kPower) setEG800KPower(true);
+  server.send(200, "application/json",
+    "{\"success\":true,\"gpsPower\":true,\"message\":\"GPS luôn bật\"}");
 }
 
 void handleToggleBuzzer() {
@@ -1089,18 +1112,28 @@ void mqttApplyBuzzerCommand(const String& raw) {
   String s = raw;
   s.trim();
   s.toUpperCase();
-  if (s == "ON" || s == "1") setBuzzer(true);
-  else if (s == "OFF" || s == "0") setBuzzer(false);
-  else setBuzzer(!buzzerState);
+  // ON từ desktop camera AI → giữ còi kể cả khi GPIO cháy = false
+  if (s == "ON" || s == "1") {
+    cameraFireHold = true;
+    setBuzzer(true);
+  } else if (s == "OFF" || s == "0") {
+    cameraFireHold = false;
+    // checkAlerts() sẽ set lại nếu vẫn còn gas/GPIO cháy
+    int rawGas = 0;
+    bool gasAlert = false;
+    readMQ2(rawGas, gasAlert);
+    setBuzzer(gasAlert || readFireSensor());
+  } else {
+    // TOGGLE thủ công — không đụng cameraFireHold
+    setBuzzer(!buzzerState);
+  }
 }
 
 void mqttApplyGpsCommand(const String& raw) {
-  String s = raw;
-  s.trim();
-  s.toUpperCase();
-  if (s == "ON" || s == "1") setEG800KPower(true);
-  else if (s == "OFF" || s == "0") setEG800KPower(false);
-  else setEG800KPower(!eg800kPower);
+  (void)raw;
+  // Định vị luôn bật — bỏ qua OFF/TOGGLE tắt
+  if (!eg800kPower) setEG800KPower(true);
+  Serial.println("  [GPS] MQTT: dinh vi luon BAT");
 }
 
 void mqttApplySmsCommand(const String& raw) {
@@ -1150,8 +1183,12 @@ String buildSensorJson() {
   json += "\"hum\":" + String(hum, 2) + ",";
   json += "\"volt\":" + String(volt, 2) + ",";
   json += "\"gas\":" + String(rawGas) + ",";
+  bool blaze = fireAlert || cameraFireHold;
+  String alarmLabel = buildAlarmLabel(gasAlert, fireAlert, cameraFireHold);
   json += "\"gasAlert\":" + String(gasAlert ? "true" : "false") + ",";
-  json += "\"fireAlert\":" + String(fireAlert ? "true" : "false") + ",";
+  json += "\"fireAlert\":" + String(blaze ? "true" : "false") + ",";
+  json += "\"cameraFire\":" + String(cameraFireHold ? "true" : "false") + ",";
+  json += "\"alarmLabel\":\"" + jsonEscape(alarmLabel) + "\",";
   json += "\"buzzer\":" + String(buzzerState ? "true" : "false") + ",";
   json += "\"gpsPower\":" + String(eg800kPower ? "true" : "false") + ",";
   json += "\"gpsGnss\":\"" + jsonEscape(gpsGnssStatus) + "\",";
@@ -1478,6 +1515,8 @@ void onWifiEvent(WiFiEvent_t event) {
       if (safetyHasStaConfig()) {
         // Không ghi đè ngay sau GOT_IP (một số bản core bắn disconnect ngắn)
         if (staConnStatus == "Thành công" && (millis() - staConnOkMs) < 3000) break;
+        // Hủy hẹn tắt SoftAP — bàn giao / sai mật khẩu vẫn giữ portal
+        portalStopAtMs = 0;
         staConnStatus = "Thất bại";
         staConnDetail = String("Không kết nối được \"") + String(getSafetyStaSsid()) +
                         "\". Kiểm tra mật khẩu / sóng rồi thử lại.";
@@ -1662,7 +1701,13 @@ void loop() {
     dnsServer.processNextRequest();
   }
   if (portalStopAtMs != 0 && (int32_t)(millis() - portalStopAtMs) >= 0) {
-    stopPortalAP("STA connected — het ban giao");
+    // Chỉ tắt SoftAP khi WiFi nhà vẫn còn — tránh mất portal lúc bàn giao / mật khẩu sai
+    if (safetyStaConnected()) {
+      stopPortalAP("STA connected — het ban giao");
+    } else {
+      portalStopAtMs = 0;
+      Serial.println("  [WIFI] Bo hen tat SoftAP — STA chua on dinh, giu portal");
+    }
   }
   // Mất WiFi nhà lâu → mở lại portal để cấu hình / bàn giao
   if (safetyHasStaConfig() && !safetyStaConnected()) {
@@ -1691,9 +1736,9 @@ void loop() {
         Serial.read();
         if (portalApActive) stopPortalAP("serial p");
         else startPortalAP("serial p — ban giao");
-      } else {
-        SerialGPS.write(Serial.read());
+        continue;
       }
+      SerialGPS.write(Serial.read());
     }
   }
 

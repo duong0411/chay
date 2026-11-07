@@ -152,7 +152,8 @@ class MqttService {
   }
 
   void toggleBuzzer() => publish(AppConfig.cmndBuzzer, 'TOGGLE');
-  void toggleGps() => publish(AppConfig.cmndGps, 'TOGGLE');
+  void toggleGps() => publish(AppConfig.cmndGps, 'ON'); // GPS luôn bật
+  void ensureGpsOn() => publish(AppConfig.cmndGps, 'ON');
   void sendTestSms() => publish(AppConfig.cmndSms, 'ON');
   void setSmsNumbers(String numbers) =>
       publish(AppConfig.cmndSmsNumbers, numbers.trim());

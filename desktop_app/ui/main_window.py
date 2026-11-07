@@ -4,7 +4,7 @@ import json
 import time
 from typing import Optional
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -36,6 +36,9 @@ from .widgets import AlarmBanner, GradientBackground, InfoCard, LiveDot, MetricT
 
 
 class MainWindow(QMainWindow):
+    # MQTT callbacks chạy ngoài UI thread — bắt buộc dùng signal (QTimer.singleShot không tin cậy).
+    mqtt_message = pyqtSignal(str, object, str)
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"{AppConfig.APP_NAME}  ·  v{AppConfig.APP_VERSION}")
@@ -46,6 +49,7 @@ class MainWindow(QMainWindow):
         self.api = DeviceApi()
         self.mqtt = MqttService()
         self.mqtt.set_handler(self._on_mqtt)
+        self.mqtt_message.connect(self._handle_mqtt)
         self.detector = FireDetector()
         self.mode = "mqtt"
         self.live = False
@@ -181,7 +185,7 @@ class MainWindow(QMainWindow):
         grid.setSpacing(10)
         self.metric_volt = MetricTile("Nguồn 12V", "⚡")
         self.metric_temp = MetricTile("Nhiệt / ẩm", "°C")
-        self.metric_gas = MetricTile("Gas / Khói", "☁")
+        self.metric_gas = MetricTile("Khói / Gas / CO", "☁")
         self.metric_fire = MetricTile("Báo cháy", "🔥")
         grid.addWidget(self.metric_volt, 0, 0)
         grid.addWidget(self.metric_temp, 0, 1)
@@ -196,13 +200,13 @@ class MainWindow(QMainWindow):
 
         actions = QHBoxLayout()
         self.btn_buzzer = QPushButton("Còi: —")
-        self.btn_gps = QPushButton("SIM/GPS")
+        self.btn_gps = QPushButton("Định vị: LUÔN BẬT")
         self.btn_sms = QPushButton("SMS test")
         self.btn_buzzer.setObjectName("primary")
         self.btn_gps.setObjectName("cyan")
         self.btn_sms.setObjectName("ghost")
         self.btn_buzzer.clicked.connect(self._toggle_buzzer)
-        self.btn_gps.clicked.connect(self._toggle_gps)
+        self.btn_gps.clicked.connect(self._ensure_gps_on)
         self.btn_sms.clicked.connect(self._send_sms)
         actions.addWidget(self.btn_buzzer)
         actions.addWidget(self.btn_gps)
@@ -285,6 +289,8 @@ class MainWindow(QMainWindow):
                 self.mode = "mqtt"
                 self.chip = chip
                 self.live = False
+                self.data = None
+                self.mqtt.ensure_gps_on()
                 self._set_status(f"MQTT OK · chờ chip {chip} online...")
                 self._poll.stop()
             else:
@@ -331,20 +337,22 @@ class MainWindow(QMainWindow):
             self._set_status(str(e))
 
     def _on_mqtt(self, topic: str, value, raw: str) -> None:
-        # Called from MQTT thread — marshal to UI thread
-        QTimer.singleShot(0, lambda: self._handle_mqtt(topic, value, raw))
+        # MQTT thread → UI thread (queued connection mặc định của pyqtSignal)
+        self.mqtt_message.emit(topic, value, raw)
 
     def _handle_mqtt(self, topic: str, value, raw: str) -> None:
-        if topic.endswith("/status") and "_vitals" not in topic:
-            online = str(value).lower() == "online"
+        chip = self.chip
+        # Phân biệt đúng topic — đừng nhầm tele/{chip}_vision/status với online
+        if topic == AppConfig.topic_online(chip):
+            online = str(value).strip().lower() == "online"
             self.live = online or self.data is not None
             self.live_dot.set_live(self.live)
             self.live_text.setText("Live" if self.live else "Offline")
             self._set_status(
-                f"Từ xa · chip {self.chip} online" if online else f"Chip {self.chip} offline"
+                f"Từ xa · chip {chip} online" if online else f"Chip {chip} offline"
             )
             return
-        if "_vitals" in topic:
+        if topic == AppConfig.topic_vitals(chip):
             try:
                 if isinstance(value, dict):
                     data = value
@@ -355,9 +363,13 @@ class MainWindow(QMainWindow):
                 self.live_dot.set_live(True)
                 self.live_text.setText("Live")
                 self._apply_snapshot(snap)
-                self._set_status(f"Từ xa · chip {self.chip}")
+                self._set_status(f"Từ xa · chip {chip}")
             except Exception as e:
                 self._set_status(f"Lỗi vitals: {e}")
+            return
+        if topic == AppConfig.topic_vision(chip):
+            # Retained vision từ desktop khác / chính mình — không đổi trạng thái online
+            return
 
     def _apply_snapshot(self, snap: DeviceSnapshot) -> None:
         snap.vision_fire = self._vision_fire
@@ -383,18 +395,21 @@ class MainWindow(QMainWindow):
         self.metric_gas.set_value(
             str(snap.gas),
             "",
-            "CẢNH BÁO" if snap.gas_alert else "An toàn · /4095",
+            "CÓ KHÓI" if snap.gas_alert else "An toàn · /4095",
             alert=snap.gas_alert,
         )
-        fire_txt = "CHÁY" if (snap.fire_alert or snap.vision_fire) else "OK"
-        fire_detail = "GPIO26"
+        fire_txt = "CHÁY" if snap.blaze_alert else "OK"
         if snap.vision_fire:
-            fire_detail += " · AI Camera"
+            fire_detail = "Camera AI · Báo cháy"
+        elif snap.fire_alert:
+            fire_detail = "Cảm biến · Báo cháy"
+        else:
+            fire_detail = "An toàn"
         self.metric_fire.set_value(
             fire_txt,
             "",
             fire_detail,
-            alert=snap.fire_alert or snap.vision_fire,
+            alert=snap.blaze_alert,
         )
 
         gnss = snap.gps_gnss or "--"
@@ -413,6 +428,7 @@ class MainWindow(QMainWindow):
             + (f" · {snap.sms_age_sec}s trước" if snap.sms_age_sec else "")
         )
         self.btn_buzzer.setText("Còi: BẬT" if snap.buzzer else "Còi: TẮT")
+        self.btn_gps.setText("Định vị: LUÔN BẬT")
         self.wifi_line.setText(
             f"Wi‑Fi CH{snap.wifi_channel} · {snap.wifi_tx_dbm:.1f} dBm · {snap.wifi_clients} ĐT"
         )
@@ -446,13 +462,15 @@ class MainWindow(QMainWindow):
         except DeviceException as e:
             QMessageBox.warning(self, "Còi", str(e))
 
-    def _toggle_gps(self) -> None:
+    def _ensure_gps_on(self) -> None:
+        """Định vị luôn bật — không cho tắt."""
         try:
             if self.mode == "mqtt":
-                self.mqtt.toggle_gps()
+                self.mqtt.ensure_gps_on()
             else:
                 self.api.toggle_gps(self.host)
                 self._poll_local()
+            self._set_status("Định vị: luôn BẬT")
         except DeviceException as e:
             QMessageBox.warning(self, "GPS", str(e))
 
@@ -612,9 +630,9 @@ class MainWindow(QMainWindow):
         """MQTT WSS → tele/{chip}_vision/status → app mobile cảnh báo."""
         ok = self.mqtt.publish_vision_alert(
             fire=fire,
-            label="Camera AI laptop phát hiện lửa/khói" if fire else "Camera AI hết cảnh báo",
+            label="Báo cháy · Camera AI phát hiện lửa" if fire else "Camera AI hết cảnh báo",
             cameras="A,B",
-            sound_buzzer=fire,
+            sound_buzzer=True,
         )
         self._vision_published = fire
         if ok:
@@ -631,19 +649,20 @@ class MainWindow(QMainWindow):
             )
 
     def _refresh_vision_alarm(self, any_fire: bool) -> None:
-        """Bật/tắt banner + tile cháy theo AI; tôn trọng cảnh báo gas/GPIO nếu đang có."""
+        """Banner: Báo cháy / Hỏa hoạn nếu kèm khói."""
         if self.data:
+            self.data.vision_fire = any_fire
+            self.data.vision_label = "Báo cháy · Camera AI" if any_fire else ""
             self._apply_snapshot(self.data)
             return
-        # Chỉ chạy camera AI, chưa có dữ liệu thiết bị
         if any_fire:
-            self.alarm.set_state(True, "Camera AI phát hiện lửa/khói")
-            self.metric_fire.set_value("CHÁY", "", "AI Camera", alert=True)
+            self.alarm.set_state(True, "Báo cháy")
+            self.metric_fire.set_value("CHÁY", "", "Camera AI · Báo cháy", alert=True)
             if not self._alarm_blink.isActive():
                 self._alarm_blink.start(500)
         else:
             self.alarm.set_state(False, "")
-            self.metric_fire.set_value("OK", "", "AI Camera", alert=False)
+            self.metric_fire.set_value("OK", "", "An toàn", alert=False)
             self._alarm_blink.stop()
             self._blink_on = False
             self.alarm.setStyleSheet("")

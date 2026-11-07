@@ -36,7 +36,7 @@ def models_dir() -> Path:
 
 class AppConfig:
     APP_NAME = "Safety Remote Desktop"
-    APP_VERSION = "1.0.7"
+    APP_VERSION = "1.0.9"
 
     DEFAULT_HOST = "192.168.4.1"
     WIFI_NAME = "Safety Remote"

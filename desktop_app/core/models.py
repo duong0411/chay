@@ -58,19 +58,23 @@ class DeviceSnapshot:
         return self.temp > -900
 
     @property
+    def blaze_alert(self) -> bool:
+        return self.fire_alert or self.vision_fire
+
+    @property
     def alarm_active(self) -> bool:
-        return self.gas_alert or self.fire_alert or self.vision_fire
+        return self.gas_alert or self.blaze_alert
 
     @property
     def alarm_label(self) -> str:
-        parts: list[str] = []
-        if self.fire_alert:
-            parts.append("Cảm biến cháy")
-        if self.vision_fire:
-            parts.append(self.vision_label or "Camera phát hiện lửa")
+        # Khói → Có khói · Camera/GPIO lửa → Báo cháy · Cả hai → Hỏa hoạn cháy to
+        if self.gas_alert and self.blaze_alert:
+            return "Hỏa hoạn cháy to"
+        if self.blaze_alert:
+            return "Báo cháy"
         if self.gas_alert:
-            parts.append("Rò gas/khói")
-        return " · ".join(parts) if parts else "An toàn"
+            return "Có khói"
+        return "An toàn"
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> "DeviceSnapshot":
