@@ -53,7 +53,9 @@ jobs:
 
   ios-ipa:
     name: iOS IPA
-    runs-on: macos-14
+    # macos-latest tránh cancel sớm khi macos-14 không được cấp runner
+    runs-on: macos-latest
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
