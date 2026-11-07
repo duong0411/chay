@@ -218,6 +218,24 @@ class MonitorProvider extends ChangeNotifier {
     await refresh();
   }
 
+  Future<void> saveSmsNumbers(String numbers) async {
+    final cleaned = numbers.trim();
+    if (cleaned.isEmpty) {
+      throw DeviceException('Nhập ít nhất 1 số điện thoại');
+    }
+    if (isMqtt) {
+      _mqtt.setSmsNumbers(cleaned);
+      status = 'Đã gửi cấu hình số SMS qua MQTT';
+      notifyListeners();
+      return;
+    }
+    final res = await _api.setSmsNumbers(host, cleaned);
+    if (res['success'] == false) {
+      throw DeviceException('${res['message'] ?? 'Không lưu được số SMS'}');
+    }
+    await refresh();
+  }
+
   Future<void> testAlarmNotification() async {
     await _ensureNotifyPermission();
     await _alerts.showAlarm(

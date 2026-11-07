@@ -160,7 +160,7 @@ class _ConnectPageState extends State<ConnectPage> {
                                   style: TextStyle(fontWeight: FontWeight.w800)),
                               SizedBox(height: 8),
                               Text('Tên mạng: ${AppConfig.wifiName}'),
-                              Text('Mật khẩu: ${AppConfig.wifiPassword}'),
+                              Text('Mật khẩu: Không (mạng mở)'),
                               SizedBox(height: 8),
                               Text(
                                 'Điện thoại phải đứng trong Wi‑Fi của mạch.',

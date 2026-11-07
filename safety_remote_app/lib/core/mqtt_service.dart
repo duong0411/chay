@@ -154,6 +154,8 @@ class MqttService {
   void toggleBuzzer() => publish(AppConfig.cmndBuzzer, 'TOGGLE');
   void toggleGps() => publish(AppConfig.cmndGps, 'TOGGLE');
   void sendTestSms() => publish(AppConfig.cmndSms, 'ON');
+  void setSmsNumbers(String numbers) =>
+      publish(AppConfig.cmndSmsNumbers, numbers.trim());
 
   Future<void> _safeDisconnect() async {
     _updatesSub?.cancel();

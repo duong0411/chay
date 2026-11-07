@@ -411,13 +411,66 @@ class _GpsCard extends StatelessWidget {
   }
 }
 
-class _SmsCard extends StatelessWidget {
+class _SmsCard extends StatefulWidget {
   const _SmsCard({required this.device});
   final MonitorProvider device;
 
   @override
+  State<_SmsCard> createState() => _SmsCardState();
+}
+
+class _SmsCardState extends State<_SmsCard> {
+  late final TextEditingController _numbers;
+  late final FocusNode _focus;
+  String _syncedTo = '';
+  bool _saving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final current = widget.device.data?.smsTo ?? '';
+    _numbers = TextEditingController(text: current);
+    _focus = FocusNode();
+    _syncedTo = current;
+  }
+
+  @override
+  void dispose() {
+    _numbers.dispose();
+    _focus.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SmsCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final next = widget.device.data?.smsTo ?? '';
+    if (_focus.hasFocus || _saving || next == _syncedTo) return;
+    _numbers.text = next;
+    _syncedTo = next;
+  }
+
+  Future<void> _save() async {
+    setState(() => _saving = true);
+    try {
+      await widget.device.saveSmsNumbers(_numbers.text);
+      _syncedTo = widget.device.data?.smsTo ?? _numbers.text.trim();
+      if (!mounted) return;
+      showAppSnack(context, message: 'Đã lưu số nhận SMS', success: true);
+    } on DeviceException catch (e) {
+      if (!mounted) return;
+      showAppSnack(context, message: e.message);
+    } catch (_) {
+      if (!mounted) return;
+      showAppSnack(context, message: 'Không lưu được số SMS');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final data = device.data!;
+    final data = widget.device.data!;
     final failed = data.smsStatus.contains('Thất bại');
     final ok = data.smsStatus.contains('Thành công') || data.smsStatus.contains('Đã gửi');
     final reasonColor = failed
@@ -450,7 +503,57 @@ class _SmsCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-          Text('Số nhận: ${data.smsTo}', style: const TextStyle(color: SafetyTheme.muted)),
+          const Text(
+            'Số nhận (tối đa 5, cách nhau bằng dấu phẩy)',
+            style: TextStyle(color: SafetyTheme.muted, fontSize: 12),
+          ),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _numbers,
+            focusNode: _focus,
+            keyboardType: TextInputType.phone,
+            minLines: 1,
+            maxLines: 3,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+            decoration: InputDecoration(
+              hintText: '0377...,0988...',
+              filled: true,
+              fillColor: Colors.white.withValues(alpha: 0.04),
+              border: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              enabledBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+              ),
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: const BorderSide(color: SafetyTheme.cyan),
+              ),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+            ),
+          ),
+          const SizedBox(height: 8),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: _saving ? null : _save,
+              icon: _saving
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.save_rounded, size: 18),
+              label: Text(_saving ? 'Đang lưu...' : 'Lưu số nhận'),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            'Đang dùng: ${data.smsTo.isEmpty ? '(chưa cấu hình)' : data.smsTo}',
+            style: const TextStyle(color: SafetyTheme.muted),
+          ),
           Text(
             'Trạng thái: ${data.smsStatus}',
             style: const TextStyle(fontWeight: FontWeight.w700),

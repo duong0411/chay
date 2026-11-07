@@ -58,6 +58,9 @@ class FireDetector:
         return None
 
     def _load(self) -> None:
+        import sys
+
+        errors: list[str] = []
         ov_path = self._find_ov_model()
         if ov_path is not None:
             try:
@@ -65,7 +68,14 @@ class FireDetector:
 
                 core = Core()
                 model = core.read_model(str(ov_path))
-                self._compiled = core.compile_model(model, "CPU")
+                try:
+                    self._compiled = core.compile_model(
+                        model,
+                        "CPU",
+                        {"INFERENCE_NUM_THREADS": str(AppConfig.OPENVINO_THREADS)},
+                    )
+                except Exception:
+                    self._compiled = core.compile_model(model, "CPU")
                 inp = self._compiled.inputs[0]
                 self._input_name = inp.get_any_name()
                 shape = list(inp.shape)
@@ -81,10 +91,14 @@ class FireDetector:
                     ]
                 return
             except Exception as e:
-                self.error = f"OpenVINO load failed: {e}"
+                errors.append(f"OpenVINO: {e}")
+        else:
+            errors.append(f"Không thấy .xml/.bin trong {models_dir()}")
 
+        # EXE lean build không đóng gói ultralytics — chỉ thử khi chạy source
+        frozen = bool(getattr(sys, "frozen", False))
         pt = self._find_pt_model()
-        if pt is not None:
+        if pt is not None and not frozen:
             try:
                 from ultralytics import YOLO
 
@@ -96,10 +110,11 @@ class FireDetector:
                 self.ready = True
                 return
             except Exception as e:
-                self.error = f"Ultralytics load failed: {e}"
+                errors.append(f"Ultralytics: {e}")
+        elif pt is not None and frozen:
+            errors.append("EXE cần OpenVINO (.xml/.bin). Copy thư mục models cạnh file .exe")
 
-        if not self.error:
-            self.error = "Chưa có model. Chạy: python ai/download_model.py"
+        self.error = " | ".join(errors) if errors else "Chưa có model. Chạy: python ai/download_model.py"
 
     def _letterbox(self, img: np.ndarray, new_shape: tuple[int, int]) -> tuple[np.ndarray, float, tuple[int, int]]:
         h, w = img.shape[:2]
@@ -179,14 +194,46 @@ class FireDetector:
             for i in keep
         ]
 
+    def _enhance_for_fire(self, frame_bgr: np.ndarray) -> np.ndarray:
+        """CLAHE nhẹ — giúp lửa/khói rõ hơn trên webcam USB tối, không đổi kích thước model."""
+        try:
+            lab = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2LAB)
+            l, a, b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            l2 = clahe.apply(l)
+            return cv2.cvtColor(cv2.merge([l2, a, b]), cv2.COLOR_LAB2BGR)
+        except Exception:
+            return frame_bgr
+
+    def _filter_dets(self, dets: list[Detection], frame_shape: tuple[int, int]) -> list[Detection]:
+        """Giữ box lửa/khói đủ lớn + đủ conf — bỏ nhiễu nhỏ."""
+        oh, ow = frame_shape
+        min_area = max(64.0, 0.0008 * ow * oh)
+        out: list[Detection] = []
+        for d in dets:
+            if not self.is_fire_label(d.label):
+                continue
+            if d.conf < self.conf:
+                continue
+            x1, y1, x2, y2 = d.xyxy
+            area = max(0, x2 - x1) * max(0, y2 - y1)
+            if area < min_area:
+                continue
+            out.append(d)
+        out.sort(key=lambda d: d.conf, reverse=True)
+        return out
+
     def infer(self, frame_bgr: np.ndarray) -> tuple[list[Detection], float]:
         if frame_bgr is None or not self.ready:
             return [], 0.0
         t0 = time.perf_counter()
+        # Letterbox 640 đúng train size. CLAHE chỉ khi frame tối (webcam USB thiếu sáng)
+        mean = float(frame_bgr.mean()) if frame_bgr.size else 128.0
+        src = self._enhance_for_fire(frame_bgr) if mean < 55.0 else frame_bgr
         dets: list[Detection] = []
 
         if self.backend == "openvino" and self._compiled is not None:
-            letter, r, dwdh = self._letterbox(frame_bgr, self._input_size)
+            letter, r, dwdh = self._letterbox(src, self._input_size)
             rgb = cv2.cvtColor(letter, cv2.COLOR_BGR2RGB)
             blob = rgb.transpose(2, 0, 1)[None].astype(np.float32) / 255.0
             result = self._compiled([blob])
@@ -194,7 +241,7 @@ class FireDetector:
             dets = self._parse_ov(out, r, dwdh, frame_bgr.shape[:2])
         elif self.backend == "ultralytics" and self._ultralytics is not None:
             res = self._ultralytics.predict(
-                source=frame_bgr,
+                source=src,
                 conf=self.conf,
                 iou=self.iou,
                 verbose=False,
@@ -213,6 +260,7 @@ class FireDetector:
                         )
                     )
 
+        dets = self._filter_dets(dets, frame_bgr.shape[:2])
         ms = (time.perf_counter() - t0) * 1000.0
         return dets, ms
 
@@ -221,8 +269,8 @@ class FireDetector:
         low = label.lower()
         return any(k in low for k in ("fire", "flame", "smoke", "cháy", "lửa", "khói"))
 
-    def draw(self, frame_bgr: np.ndarray, detections: list[Detection]) -> np.ndarray:
-        out = frame_bgr.copy()
+    def draw(self, frame_bgr: np.ndarray, detections: list[Detection], *, inplace: bool = False) -> np.ndarray:
+        out = frame_bgr if inplace else frame_bgr.copy()
         for d in detections:
             x1, y1, x2, y2 = d.xyxy
             color = (42, 42, 255) if self.is_fire_label(d.label) else (28, 159, 255)

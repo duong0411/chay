@@ -2,16 +2,16 @@
 # Lean EXE: PyQt5 + OpenCV + OpenVINO + MQTT (không đóng gói PyTorch/Ultralytics)
 from pathlib import Path
 
+from PyInstaller.utils.hooks import collect_all, collect_dynamic_libs
+
 block_cipher = None
 root = Path(SPECPATH)
 
 datas = []
-models = root / "models"
-if models.exists():
-    datas.append((str(models), "models"))
-
+binaries = []
 hiddenimports = [
     "openvino",
+    "openvino.runtime",
     "paho",
     "paho.mqtt",
     "paho.mqtt.client",
@@ -20,6 +20,8 @@ hiddenimports = [
     "core",
     "core.config",
     "core.models",
+    "core.camera_enum",
+    "core.gst_capture",
     "core.device_api",
     "core.mqtt_client",
     "ai",
@@ -29,7 +31,21 @@ hiddenimports = [
     "ui.styles",
     "ui.widgets",
     "ui.camera_widget",
+    "cv2_enumerate_cameras",
 ]
+
+# Bundle OpenVINO plugins/libs so EXE can compile YOLO IR
+try:
+    ov_datas, ov_bins, ov_hidden = collect_all("openvino")
+    datas += ov_datas
+    binaries += ov_bins
+    hiddenimports += ov_hidden
+except Exception:
+    binaries += collect_dynamic_libs("openvino")
+
+models = root / "models"
+if models.exists():
+    datas.append((str(models), "models"))
 
 excludes = [
     "torch",
@@ -60,7 +76,7 @@ excludes = [
 a = Analysis(
     ["main.py"],
     pathex=[str(root)],
-    binaries=[],
+    binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],

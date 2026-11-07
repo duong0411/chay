@@ -12,6 +12,7 @@
  *  cmnd/{chip}_buzzer/POWER    ON|OFF|TOGGLE
  *  cmnd/{chip}_gps/POWER       TOGGLE|ON|OFF
  *  cmnd/{chip}_sms/POWER       bất kỳ → gửi SMS test
+ *  cmnd/{chip}_smsnum/SET      "0377...,0988..." → lưu số nhận SMS
  */
 #pragma once
 
@@ -36,6 +37,7 @@ extern String buildSensorJson();
 extern void mqttApplyBuzzerCommand(const String& raw);
 extern void mqttApplyGpsCommand(const String& raw);
 extern void mqttApplySmsCommand(const String& raw);
+extern void mqttApplySmsNumbersCommand(const String& raw);
 
 static WebSocketsClient* safetyWs = nullptr;
 static MQTTPubSubClient* safetyMqtt = nullptr;
@@ -111,6 +113,9 @@ inline void safetyHandleCmd(const String& kind, const String& raw) {
   } else if (kind == "sms") {
     mqttApplySmsCommand(raw);
     safetyPublishVitals();
+  } else if (kind == "smsnum") {
+    mqttApplySmsNumbersCommand(raw);
+    safetyPublishVitals();
   }
 }
 
@@ -134,6 +139,7 @@ inline void safetyMqttEnsureConnected() {
   String buzzerTopic = String("cmnd/") + safetyChipId + "_buzzer/POWER";
   String gpsTopic = String("cmnd/") + safetyChipId + "_gps/POWER";
   String smsTopic = String("cmnd/") + safetyChipId + "_sms/POWER";
+  String smsNumTopic = String("cmnd/") + safetyChipId + "_smsnum/SET";
 
   safetyMqtt->subscribe(buzzerTopic, [](const char* p, unsigned int n) {
     String s;
@@ -151,6 +157,12 @@ inline void safetyMqttEnsureConnected() {
     String s;
     for (unsigned i = 0; i < n; i++) s += p[i];
     safetyHandleCmd("sms", s);
+  });
+  delay(20);
+  safetyMqtt->subscribe(smsNumTopic, [](const char* p, unsigned int n) {
+    String s;
+    for (unsigned i = 0; i < n; i++) s += p[i];
+    safetyHandleCmd("smsnum", s);
   });
 }
 

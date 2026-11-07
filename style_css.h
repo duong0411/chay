@@ -169,6 +169,14 @@ body {
   background: rgba(255,255,255,0.04); font-size: 12px;
   white-space: pre-wrap; word-break: break-word; min-height: 40px;
 }
+.sms-numbers {
+  min-height: 64px;
+  resize: vertical;
+  margin-bottom: 8px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+#sms-card .btn-ghost { width: 100%; margin-bottom: 4px; }
 
 .actions {
   display: grid;

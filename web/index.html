@@ -22,7 +22,7 @@
         <div class="panel tip">
           <div class="tip-title">Kết nối gần máy</div>
           <div>Tên mạng: <b>Safety Remote</b></div>
-          <div>Mật khẩu: <b>1234567890</b></div>
+          <div>Mật khẩu: <b>Không (mạng mở)</b></div>
           <div class="muted" style="margin-top:8px">Điện thoại phải đứng trong Wi‑Fi của mạch, rồi mở app / trình duyệt.</div>
         </div>
 
@@ -89,7 +89,10 @@
           <span>SMS cảnh báo</span>
           <span class="badge" id="badge-sms">--</span>
         </div>
-        <div class="kv">Số nhận: <b id="val-sms-to">--</b></div>
+        <label class="field-label" for="sms-numbers">Số nhận (tối đa 5, cách nhau bằng dấu phẩy)</label>
+        <textarea id="sms-numbers" class="field sms-numbers" rows="2" placeholder="0377...,0988..."></textarea>
+        <button id="btn-save-sms" class="btn btn-ghost" type="button">Lưu số nhận</button>
+        <div class="kv" style="margin-top:10px">Đang dùng: <b id="val-sms-to">--</b></div>
         <div class="kv">Trạng thái: <b id="val-sms-status">--</b></div>
         <div id="sms-reason" class="reason">--</div>
         <div class="muted" id="val-sms-stats">OK 0 · Lỗi 0</div>

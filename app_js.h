@@ -89,12 +89,23 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
     return bad.indexOf(v) === -1 && !Number.isNaN(parseFloat(v));
   }
 
-  async function api(path) {
+  async function api(path, opts = {}) {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), 4000);
     try {
-      const res = await fetch(`${baseUrl()}${path}`, { signal: ctrl.signal, cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(`${baseUrl()}${path}`, {
+        signal: ctrl.signal,
+        cache: "no-store",
+        ...opts,
+      });
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const j = await res.json();
+          if (j && j.message) msg = j.message;
+        } catch (_) {}
+        throw new Error(msg);
+      }
       return await res.json();
     } finally {
       clearTimeout(t);
@@ -212,7 +223,15 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
       btnBz.textContent = "Còi: TẮT";
     }
 
-    $("val-sms-to").textContent = data.smsTo || "--";
+    $("val-sms-to").textContent = data.smsTo || "(chưa cấu hình)";
+    const smsInput = $("sms-numbers");
+    if (smsInput && document.activeElement !== smsInput) {
+      const next = data.smsTo || "";
+      if (smsInput.dataset.synced !== next) {
+        smsInput.value = next;
+        smsInput.dataset.synced = next;
+      }
+    }
     const smsStatus = data.smsStatus || "Chưa gửi";
     $("val-sms-status").textContent = smsStatus;
     $("val-sms-stats").textContent =
@@ -293,6 +312,26 @@ const char APP_JS_CONTENT[] PROGMEM = R"rawliteral(
     $("btn-buzzer").addEventListener("click", () => act("/api/toggleBuzzer"));
     $("btn-gps").addEventListener("click", () => act("/api/toggleGps"));
     $("btn-sms").addEventListener("click", () => act("/api/sendTestSms", "Đã xếp hàng SMS test"));
+    $("btn-save-sms").addEventListener("click", async () => {
+      const numbers = ($("sms-numbers").value || "").trim();
+      if (!numbers) {
+        toast("Nhập ít nhất 1 số điện thoại", false);
+        return;
+      }
+      try {
+        const body = new URLSearchParams({ numbers });
+        const data = await api("/api/smsNumbers", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body,
+        });
+        toast(data.message || "Đã lưu số nhận SMS", true);
+        $("sms-numbers").dataset.synced = "";
+        await refresh();
+      } catch (e) {
+        toast(e.message || "Không lưu được số nhận", false);
+      }
+    });
 
     // Auto-connect nếu đang ở SoftAP cùng máy
     if (location.protocol.startsWith("http") && location.hostname === "192.168.4.8") {

@@ -1,5 +1,6 @@
 PyQt5>=5.15.11
 opencv-python>=4.8.0
+cv2-enumerate-cameras>=1.1.0
 numpy>=1.26.0
 openvino>=2024.0.0
 paho-mqtt>=2.0.0

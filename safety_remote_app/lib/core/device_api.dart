@@ -40,6 +40,21 @@ class DeviceApi {
   Future<Map<String, dynamic>> sendTestSms(String host) =>
       _getAction(host, '/api/sendTestSms');
 
+  Future<Map<String, dynamic>> setSmsNumbers(String host, String numbers) {
+    return _guard(host, () async {
+      final res = await _client
+          .post(
+            _uri(host, '/api/smsNumbers'),
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+            body: {'numbers': numbers},
+          )
+          .timeout(AppConfig.requestTimeout);
+      return _decode(res);
+    });
+  }
+
   Future<Map<String, dynamic>> _getAction(String host, String path) {
     return _guard(host, () async {
       final res = await _client

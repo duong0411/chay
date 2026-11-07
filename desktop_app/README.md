@@ -24,7 +24,7 @@ py -3.12 main.py
 | Mode | Cách dùng |
 |------|-----------|
 | **Từ xa (MQTT)** | Chip ID (mặc định `888`), broker `wss://mqtt.duynguyen.io.vn/mqtt` |
-| **Gần máy** | Vào Wi‑Fi `Safety Remote` / `1234567890` → IP `192.168.4.8` |
+| **Gần máy** | Vào Wi‑Fi `Safety Remote` (không mật khẩu) → IP `192.168.4.8` |
 
 ## Camera AI → cảnh báo điện thoại (MQTT)
 
@@ -43,11 +43,10 @@ Laptop camera YOLO phát hiện lửa
 
 ## Camera AI
 
-1. Chọn **Cam A / Cam B** (máy bạn có 2 camera)
-2. Bấm **Bật 2 Camera AI**
-3. Model ưu tiên OpenVINO (`models/yolov8n_fire.xml` + `.bin`); fallback `.pt` qua Ultralytics
-
-> Để nhận diện cháy tốt: thay `models/yolov8n_fire.pt` bằng weight YOLO đã train fire/smoke, rồi chạy lại `ai\download_model.py`.
+1. Bấm **Quét cam** nếu vừa cắm USB — dropdown hiện tên thật (`Laptop · Integrated Webcam`, `USB · GENERAL WEBCAM`, …)
+2. Chọn **Cam A / Cam B** khác nhau (1 laptop + 1 USB, hoặc 2 USB)
+3. Bấm **Bật 2 Camera AI**
+4. Model OpenVINO fire/smoke (`models/yolov8n_fire.xml` + `.bin`); fallback `.pt` qua Ultralytics
 
 ## Đóng gói EXE (gửi khách)
 

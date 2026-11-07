@@ -102,6 +102,27 @@ QLineEdit, QComboBox {
   selection-background-color: #00E5FF;
   selection-color: #070B12;
 }
+QSlider::groove:horizontal {
+  height: 6px;
+  background: #1C2638;
+  border-radius: 3px;
+}
+QSlider::sub-page:horizontal {
+  background: #00E5FF;
+  border-radius: 3px;
+}
+QSlider::add-page:horizontal {
+  background: #243247;
+  border-radius: 3px;
+}
+QSlider::handle:horizontal {
+  width: 16px;
+  height: 16px;
+  margin: -6px 0;
+  border-radius: 8px;
+  background: #E8EEF8;
+  border: 2px solid #00E5FF;
+}
 QComboBox::drop-down { border: none; width: 28px; }
 QComboBox QAbstractItemView {
   background: #121928;

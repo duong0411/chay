@@ -2,7 +2,7 @@
 class AppConfig {
   static const String defaultHost = '192.168.4.8';
   static const String wifiName = 'Safety Remote';
-  static const String wifiPassword = '1234567890';
+  static const String wifiPassword = ''; // SoftAP mở — không mật khẩu
   static const String deviceName = 'Safety Remote';
 
   static const String brokerUrl = 'wss://mqtt.duynguyen.io.vn/mqtt';
@@ -30,6 +30,7 @@ class AppConfig {
   static String get cmndBuzzer => 'cmnd/${chipId}_buzzer/POWER';
   static String get cmndGps => 'cmnd/${chipId}_gps/POWER';
   static String get cmndSms => 'cmnd/${chipId}_sms/POWER';
+  static String get cmndSmsNumbers => 'cmnd/${chipId}_smsnum/SET';
 
   static List<String> get subscribeTopics =>
       [topicOnline, topicVitals, topicVision];

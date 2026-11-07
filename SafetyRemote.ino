@@ -56,7 +56,8 @@
 
 // Cấu hình Wi-Fi Access Point và WebServer
 const char* ap_ssid = "Safety Remote";
-const char* ap_password = "1234567890";
+// SoftAP mở — không mật khẩu (NULL)
+const char* ap_password = nullptr;
 // Kênh 1/6/11 ít chồng chéo hơn; đổi nếu môi trường nhiễu mạnh
 const int WIFI_AP_CHANNEL = 1;
 const int WIFI_AP_MAX_CLIENTS = 4;
@@ -102,7 +103,7 @@ QueueHandle_t smsQueue = NULL;
 SemaphoreHandle_t serialMutex = NULL;
 volatile bool isSerialGPSBusy = false;
 
-// Trạng thái SMS hiển thị trên web
+// Trạng thái SMS hiển thị trên web / app
 String smsStatus = "Chưa gửi";       // Chờ / Đang gửi / Thành công / Thất bại
 String smsLastText = "";             // Nội dung SMS gần nhất
 String smsLastResult = "";           // Phản hồi mạng (OK / ERROR / ...)
@@ -110,6 +111,12 @@ unsigned long smsLastSentMs = 0;     // millis() lúc gửi xong
 uint32_t smsSentCount = 0;
 uint32_t smsFailCount = 0;
 volatile bool smsSending = false;
+
+// Số nhận SMS cấu hình từ app/web (NVS) — tối đa 5 số
+#define SMS_MAX_NUMBERS 5
+#define SMS_PHONE_MAX   20
+char smsPhones[SMS_MAX_NUMBERS][SMS_PHONE_MAX];
+uint8_t smsPhoneCount = 0;
 
 // Khai báo HardwareSerial cho GPS
 HardwareSerial SerialGPS(2);
@@ -234,7 +241,101 @@ void setEG800KPower(bool state) {
   }
 }
 
-#define RECIPIENT_NUMBER        "0377240941" // Số điện thoại nhận SMS cảnh báo
+String smsNumbersJoined() {
+  String s;
+  for (uint8_t i = 0; i < smsPhoneCount; i++) {
+    if (i) s += ",";
+    s += smsPhones[i];
+  }
+  return s;
+}
+
+String normalizePhoneToken(String raw) {
+  raw.trim();
+  String out;
+  out.reserve(raw.length());
+  for (size_t i = 0; i < raw.length(); i++) {
+    char c = raw.charAt(i);
+    if (c >= '0' && c <= '9') out += c;
+    else if (c == '+' && out.length() == 0) out += c;
+  }
+  return out;
+}
+
+bool setSmsNumbersFromRaw(const String& raw, String* errOut = nullptr) {
+  uint8_t count = 0;
+  char tmp[SMS_MAX_NUMBERS][SMS_PHONE_MAX];
+  memset(tmp, 0, sizeof(tmp));
+
+  String buf = raw;
+  buf.replace('\r', ',');
+  buf.replace('\n', ',');
+  buf.replace(';', ',');
+  buf.replace('|', ',');
+  // Giữ khoảng trắng trong từng số — normalizePhoneToken sẽ bỏ ký tự không phải số
+
+  int start = 0;
+  while (start <= (int)buf.length() && count < SMS_MAX_NUMBERS) {
+    int comma = buf.indexOf(',', start);
+    String token = (comma < 0) ? buf.substring(start) : buf.substring(start, comma);
+    token = normalizePhoneToken(token);
+    if (token.length() >= 8 && token.length() < SMS_PHONE_MAX) {
+      bool dup = false;
+      for (uint8_t i = 0; i < count; i++) {
+        if (token.equals(tmp[i])) { dup = true; break; }
+      }
+      if (!dup) {
+        token.toCharArray(tmp[count], SMS_PHONE_MAX);
+        count++;
+      }
+    }
+    if (comma < 0) break;
+    start = comma + 1;
+  }
+
+  if (count == 0) {
+    if (errOut) *errOut = "Chưa có số hợp lệ (cần ≥ 8 chữ số)";
+    return false;
+  }
+
+  memcpy(smsPhones, tmp, sizeof(smsPhones));
+  smsPhoneCount = count;
+  return true;
+}
+
+void loadSmsNumbers() {
+  prefs.begin("safety", true);
+  String raw = prefs.getString("smsNums", "");
+  prefs.end();
+  smsPhoneCount = 0;
+  memset(smsPhones, 0, sizeof(smsPhones));
+  if (raw.length() > 0) {
+    setSmsNumbersFromRaw(raw);
+  }
+  Serial.print("  [SMS] So nhan: ");
+  Serial.println(smsPhoneCount ? smsNumbersJoined() : "(chua cau hinh)");
+}
+
+void saveSmsNumbersToPrefs() {
+  prefs.begin("safety", false);
+  prefs.putString("smsNums", smsNumbersJoined());
+  prefs.end();
+}
+
+bool applySmsNumbersConfig(const String& raw, String* messageOut = nullptr) {
+  String err;
+  if (!setSmsNumbersFromRaw(raw, &err)) {
+    if (messageOut) *messageOut = err;
+    return false;
+  }
+  saveSmsNumbersToPrefs();
+  if (messageOut) {
+    *messageOut = "Đã lưu " + String(smsPhoneCount) + " số: " + smsNumbersJoined();
+  }
+  Serial.print("  [SMS] Cap nhat so nhan: ");
+  Serial.println(smsNumbersJoined());
+  return true;
+}
 
 void sim_at_wait() {
   delay(200);
@@ -313,105 +414,17 @@ void smsMarkFail(const String &reason) {
   Serial.println(reason);
 }
 
-void send_sms_to_target_blocking(String message) {
-  smsSending = true;
-  smsStatus = "Đang gửi";
-  smsLastText = message;
-  smsLastResult = "Chuẩn bị...";
-
-  if (!eg800kPower) {
-    smsMarkFail("Module SIM đang tắt nguồn");
-    return;
-  }
-
-  if (serialMutex != NULL) {
-    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(20000)) != pdTRUE) {
-      smsMarkFail("UART bận (GPS đang đọc) — thử lại sau");
-      return;
-    }
-  }
-  isSerialGPSBusy = true;
-
-  Serial.println("\n--- TIEN HANH GUI SMS (BACKGROUND TASK) ---");
-
-  // Xóa buffer rác từ GPS
-  while (SerialGPS.available()) SerialGPS.read();
-
-  // 0) Đồng bộ UART
-  SerialGPS.println("AT");
-  String r = smsWaitResponse(1500);
-  if (r.indexOf("OK") == -1) {
-    isSerialGPSBusy = false;
-    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
-    smsMarkFail("Module không trả lời AT — kiểm tra EN/UART/nguồn");
-    return;
-  }
-
-  // 1) SIM sẵn sàng?
-  while (SerialGPS.available()) SerialGPS.read();
-  SerialGPS.println("AT+CPIN?");
-  r = smsWaitResponse(2000);
-  if (r.indexOf("READY") == -1) {
-    isSerialGPSBusy = false;
-    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
-    if (r.indexOf("SIM PIN") != -1) smsMarkFail("SIM yêu cầu mã PIN");
-    else if (r.indexOf("ERROR") != -1) smsMarkFail("Không đọc được SIM (AT+CPIN?)");
-    else smsMarkFail("SIM chưa READY");
-    return;
-  }
-
-  // 2) Đã đăng ký mạng? +CREG: 0,1 hoặc 0,5
-  while (SerialGPS.available()) SerialGPS.read();
-  SerialGPS.println("AT+CREG?");
-  r = smsWaitResponse(2000);
-  bool netOk = (r.indexOf(",1") != -1) || (r.indexOf(",5") != -1);
-  if (!netOk) {
-    // Vẫn thử gửi nhưng ghi nhận cảnh báo
-    Serial.println("  [SMS] Canh bao: chua dang ky mang (+CREG khong phai 1/5).");
-  }
-
-  // 3) Chất lượng sóng
-  while (SerialGPS.available()) SerialGPS.read();
-  SerialGPS.println("AT+CSQ");
-  r = smsWaitResponse(1500);
-  int csq = -1;
-  int csqIdx = r.indexOf("+CSQ:");
-  if (csqIdx != -1) {
-    csq = r.substring(csqIdx + 5).toInt();
-  }
-  if (csq == 99 || csq == 0) {
-    isSerialGPSBusy = false;
-    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
-    smsMarkFail("Không có sóng mạng (CSQ=" + String(csq) + ")");
-    return;
-  }
-
-  // 4) Chế độ text + bảng mã
-  while (SerialGPS.available()) SerialGPS.read();
-  SerialGPS.println("AT+CMGF=1");
-  r = smsWaitResponse(1500);
-  if (r.indexOf("OK") == -1) {
-    isSerialGPSBusy = false;
-    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
-    smsMarkFail("AT+CMGF=1 lỗi — module chưa sẵn sàng SMS");
-    return;
-  }
-
-  while (SerialGPS.available()) SerialGPS.read();
-  SerialGPS.println("AT+CSCS=\"GSM\"");
-  smsWaitResponse(1500);
-
-  // 5) Gửi CMGS
+// Gửi 1 SMS tới 1 số (đã sẵn AT/CMGF). Trả true nếu OK.
+bool send_sms_one_number(const char* phone, const String& body, int csq, bool netOk, String& detailOut) {
   while (SerialGPS.available()) SerialGPS.read();
   Serial.print("Dang gui toi so: ");
-  Serial.println(RECIPIENT_NUMBER);
-  smsLastResult = "Chờ dấu '>' từ SIM...";
+  Serial.println(phone);
+  smsLastResult = String("Đang gửi → ") + phone;
 
   SerialGPS.print("AT+CMGS=\"");
-  SerialGPS.print(RECIPIENT_NUMBER);
+  SerialGPS.print(phone);
   SerialGPS.println("\"");
 
-  // Đợi '>' lâu hơn (module bận GPS có thể chậm)
   unsigned long start = millis();
   bool gotPrompt = false;
   String promptResp = "";
@@ -431,61 +444,176 @@ void send_sms_to_target_blocking(String message) {
     yield();
   }
 
-  if (gotPrompt) {
-    // Giới hạn độ dài SMS text mode ~153 ký tự 7-bit
-    String body = message;
-    if (body.length() > 150) body = body.substring(0, 150);
+  if (!gotPrompt) {
+    if (promptResp.indexOf("ERROR") != -1) detailOut = String(phone) + ": AT+CMGS ERROR";
+    else if (!netOk) detailOut = String(phone) + ": chưa đăng ký mạng";
+    else if (csq > 0 && csq < 5) detailOut = String(phone) + ": sóng yếu CSQ=" + String(csq);
+    else detailOut = String(phone) + ": không nhận '>'";
+    return false;
+  }
 
-    SerialGPS.print(body);
-    SerialGPS.write(0x1A);
-    Serial.println("\nDa gui tin nhan va Ctrl+Z. Cho phan hoi tu mang...");
-    smsLastResult = "Đã gửi Ctrl+Z — chờ mạng...";
+  SerialGPS.print(body);
+  SerialGPS.write(0x1A);
+  smsLastResult = String("Chờ mạng → ") + phone;
 
-    String netResp = "";
-    unsigned long waitStart = millis();
-    while (millis() - waitStart < 15000) {
-      while (SerialGPS.available()) {
-        char c = SerialGPS.read();
-        Serial.write(c);
-        netResp += c;
-      }
-      if (netResp.indexOf("+CMGS:") != -1 && netResp.indexOf("OK") != -1) break;
-      if (netResp.indexOf("ERROR") != -1) break;
-      server.handleClient();
-      yield();
+  String netResp = "";
+  unsigned long waitStart = millis();
+  while (millis() - waitStart < 15000) {
+    while (SerialGPS.available()) {
+      char c = SerialGPS.read();
+      Serial.write(c);
+      netResp += c;
     }
+    if (netResp.indexOf("+CMGS:") != -1 && netResp.indexOf("OK") != -1) break;
+    if (netResp.indexOf("ERROR") != -1) break;
+    server.handleClient();
+    yield();
+  }
 
-    smsLastSentMs = millis();
-    if (netResp.indexOf("+CMGS:") != -1) {
-      smsStatus = "Thành công";
-      smsLastResult = "Đã gửi OK (CSQ=" + String(csq) + ")";
+  if (netResp.indexOf("+CMGS:") != -1) {
+    detailOut = String(phone) + ": OK";
+    return true;
+  }
+  if (netResp.indexOf("ERROR") != -1) {
+    String errDetail = "ERROR";
+    if (netResp.indexOf("CMS ERROR") != -1) {
+      int e = netResp.indexOf("CMS ERROR");
+      errDetail = netResp.substring(e, min((int)netResp.length(), e + 24));
+      errDetail.trim();
+    }
+    detailOut = String(phone) + ": " + errDetail;
+    return false;
+  }
+  detailOut = String(phone) + ": timeout phản hồi";
+  return false;
+}
+
+void send_sms_to_target_blocking(String message) {
+  smsSending = true;
+  smsStatus = "Đang gửi";
+  smsLastText = message;
+  smsLastResult = "Chuẩn bị...";
+
+  if (smsPhoneCount == 0) {
+    smsMarkFail("Chưa cấu hình số nhận SMS trên app/web");
+    return;
+  }
+
+  if (!eg800kPower) {
+    smsMarkFail("Module SIM đang tắt nguồn");
+    return;
+  }
+
+  if (serialMutex != NULL) {
+    if (xSemaphoreTake(serialMutex, pdMS_TO_TICKS(20000)) != pdTRUE) {
+      smsMarkFail("UART bận (GPS đang đọc) — thử lại sau");
+      return;
+    }
+  }
+  isSerialGPSBusy = true;
+
+  Serial.println("\n--- TIEN HANH GUI SMS (BACKGROUND TASK) ---");
+  Serial.print("  [SMS] Gui toi ");
+  Serial.print(smsPhoneCount);
+  Serial.print(" so: ");
+  Serial.println(smsNumbersJoined());
+
+  while (SerialGPS.available()) SerialGPS.read();
+
+  SerialGPS.println("AT");
+  String r = smsWaitResponse(1500);
+  if (r.indexOf("OK") == -1) {
+    isSerialGPSBusy = false;
+    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
+    smsMarkFail("Module không trả lời AT — kiểm tra EN/UART/nguồn");
+    return;
+  }
+
+  while (SerialGPS.available()) SerialGPS.read();
+  SerialGPS.println("AT+CPIN?");
+  r = smsWaitResponse(2000);
+  if (r.indexOf("READY") == -1) {
+    isSerialGPSBusy = false;
+    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
+    if (r.indexOf("SIM PIN") != -1) smsMarkFail("SIM yêu cầu mã PIN");
+    else if (r.indexOf("ERROR") != -1) smsMarkFail("Không đọc được SIM (AT+CPIN?)");
+    else smsMarkFail("SIM chưa READY");
+    return;
+  }
+
+  while (SerialGPS.available()) SerialGPS.read();
+  SerialGPS.println("AT+CREG?");
+  r = smsWaitResponse(2000);
+  bool netOk = (r.indexOf(",1") != -1) || (r.indexOf(",5") != -1);
+  if (!netOk) {
+    Serial.println("  [SMS] Canh bao: chua dang ky mang (+CREG khong phai 1/5).");
+  }
+
+  while (SerialGPS.available()) SerialGPS.read();
+  SerialGPS.println("AT+CSQ");
+  r = smsWaitResponse(1500);
+  int csq = -1;
+  int csqIdx = r.indexOf("+CSQ:");
+  if (csqIdx != -1) {
+    csq = r.substring(csqIdx + 5).toInt();
+  }
+  if (csq == 99 || csq == 0) {
+    isSerialGPSBusy = false;
+    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
+    smsMarkFail("Không có sóng mạng (CSQ=" + String(csq) + ")");
+    return;
+  }
+
+  while (SerialGPS.available()) SerialGPS.read();
+  SerialGPS.println("AT+CMGF=1");
+  r = smsWaitResponse(1500);
+  if (r.indexOf("OK") == -1) {
+    isSerialGPSBusy = false;
+    if (serialMutex != NULL) xSemaphoreGive(serialMutex);
+    smsMarkFail("AT+CMGF=1 lỗi — module chưa sẵn sàng SMS");
+    return;
+  }
+
+  while (SerialGPS.available()) SerialGPS.read();
+  SerialGPS.println("AT+CSCS=\"GSM\"");
+  smsWaitResponse(1500);
+
+  String body = message;
+  if (body.length() > 150) body = body.substring(0, 150);
+
+  uint8_t okN = 0;
+  uint8_t failN = 0;
+  String summary;
+  for (uint8_t i = 0; i < smsPhoneCount; i++) {
+    String detail;
+    bool ok = send_sms_one_number(smsPhones[i], body, csq, netOk, detail);
+    if (summary.length()) summary += " | ";
+    summary += detail;
+    if (ok) {
+      okN++;
       smsSentCount++;
-      smsSending = false;
-    } else if (netResp.indexOf("ERROR") != -1) {
-      String errDetail = "ERROR từ mạng khi CMGS";
-      if (netResp.indexOf("CMS ERROR") != -1) {
-        int e = netResp.indexOf("CMS ERROR");
-        errDetail = netResp.substring(e, min((int)netResp.length(), e + 24));
-        errDetail.trim();
-      }
-      smsMarkFail(errDetail);
-      // smsMarkFail already cleared smsSending; still need release mutex below
     } else {
-      smsStatus = "Đã gửi (không rõ phản hồi)";
-      smsLastResult = netResp.length() ? netResp.substring(0, 48) : "Timeout chờ +CMGS";
-      smsSentCount++;
-      smsSending = false;
+      failN++;
+      smsFailCount++;
     }
+    delay(400);
+  }
+
+  smsLastSentMs = millis();
+  smsLastResult = summary;
+  if (okN > 0 && failN == 0) {
+    smsStatus = "Thành công";
+    smsLastResult = "OK " + String(okN) + "/" + String(smsPhoneCount) + " · CSQ=" + String(csq) + " · " + summary;
+  } else if (okN > 0) {
+    smsStatus = "Thành công một phần";
+    smsLastResult = "OK " + String(okN) + "/" + String(smsPhoneCount) + " · " + summary;
   } else {
-    String why = "Không nhận '>' sau AT+CMGS";
-    if (promptResp.indexOf("ERROR") != -1) why = "AT+CMGS trả ERROR (SIM/mạng/số nhận)";
-    else if (!netOk) why = "Chưa đăng ký mạng (+CREG) — không nhận '>'";
-    else if (csq > 0 && csq < 5) why = "Sóng yếu (CSQ=" + String(csq) + ") — không nhận '>'";
-    else why = "Không nhận '>' — module bận hoặc SMS chưa sẵn sàng";
-    smsMarkFail(why);
+    smsStatus = "Thất bại";
+    smsLastResult = "Lỗi 0/" + String(smsPhoneCount) + " · " + summary;
   }
 
   Serial.println("--- KET THUC QUY TRINH GUI SMS ---");
+  Serial.println(smsLastResult);
 
   smsSending = false;
   isSerialGPSBusy = false;
@@ -504,6 +632,15 @@ void smsTaskCode(void * pvParameters) {
 }
 
 void send_sms_to_target(String message) {
+  if (smsPhoneCount == 0) {
+    smsStatus = "Thất bại";
+    smsLastResult = "Chưa cấu hình số nhận SMS trên app/web";
+    smsLastText = message;
+    smsFailCount++;
+    smsLastSentMs = millis();
+    Serial.println("  [SMS] Bo qua — chua co so nhan.");
+    return;
+  }
   if (smsQueue == NULL) {
     Serial.println("  [ERROR] smsQueue chua duoc khoi tao!");
     smsStatus = "Thất bại";
@@ -527,13 +664,17 @@ void send_sms_to_target(String message) {
     Serial.println("  [SMS Queue] Da xep hang tin nhan gui.");
     smsStatus = "Đang chờ gửi";
     smsLastText = message;
-    smsLastResult = "Đã xếp hàng";
+    smsLastResult = String("Đã xếp hàng → ") + smsNumbersJoined();
   }
 }
 
 void send_test_sms() {
   if (!eg800kPower) {
     Serial.println("  [EG800K] Cảnh báo: Module đang tắt nguồn! Vui lòng bật nguồn trước (nhấn phím 'e').");
+    return;
+  }
+  if (smsPhoneCount == 0) {
+    Serial.println("  [SMS] Chua cau hinh so nhan.");
     return;
   }
   send_sms_to_target("Test SMS from Quectel EC800K / Safety Remote");
@@ -879,8 +1020,38 @@ void handleSendTestSms() {
     server.send(200, "application/json", "{\"success\":false,\"error\":\"Module SIM đang tắt\"}");
     return;
   }
+  if (smsPhoneCount == 0) {
+    server.send(200, "application/json", "{\"success\":false,\"error\":\"Chưa cấu hình số nhận SMS\"}");
+    return;
+  }
   send_sms_to_target("Test SMS from Safety Remote Web");
-  server.send(200, "application/json", "{\"success\":true}");
+  server.send(200, "application/json", "{\"success\":true,\"smsTo\":\"" + jsonEscape(smsNumbersJoined()) + "\"}");
+}
+
+void handleSmsNumbersGet() {
+  String json = "{";
+  json += "\"smsTo\":\"" + jsonEscape(smsNumbersJoined()) + "\",";
+  json += "\"count\":" + String(smsPhoneCount) + ",";
+  json += "\"max\":" + String(SMS_MAX_NUMBERS);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+void handleSmsNumbersPost() {
+  String raw = "";
+  if (server.hasArg("numbers")) raw = server.arg("numbers");
+  else if (server.hasArg("smsTo")) raw = server.arg("smsTo");
+
+  String msg;
+  if (!applySmsNumbersConfig(raw, &msg)) {
+    server.send(400, "application/json",
+      "{\"success\":false,\"message\":\"" + jsonEscape(msg) + "\"}");
+    return;
+  }
+  server.send(200, "application/json",
+    "{\"success\":true,\"message\":\"" + jsonEscape(msg) +
+    "\",\"smsTo\":\"" + jsonEscape(smsNumbersJoined()) +
+    "\",\"count\":" + String(smsPhoneCount) + "}");
 }
 
 // --- MQTT command hooks (Safety_Mqtt.h) ---
@@ -909,7 +1080,23 @@ void mqttApplySmsCommand(const String& raw) {
     smsLastResult = "Module SIM đang tắt (MQTT)";
     return;
   }
+  if (smsPhoneCount == 0) {
+    smsStatus = "Thất bại";
+    smsLastResult = "Chưa cấu hình số nhận SMS (MQTT)";
+    return;
+  }
   send_sms_to_target("Test SMS from Safety Remote MQTT");
+}
+
+void mqttApplySmsNumbersCommand(const String& raw) {
+  String msg;
+  if (!applySmsNumbersConfig(raw, &msg)) {
+    smsLastResult = msg;
+    Serial.print("  [SMS MQTT] Loi cau hinh: ");
+    Serial.println(msg);
+    return;
+  }
+  smsLastResult = msg;
 }
 
 String buildSensorJson() {
@@ -940,7 +1127,8 @@ String buildSensorJson() {
   json += "\"gpsGnss\":\"" + jsonEscape(gpsGnssStatus) + "\",";
   json += "\"gpsLat\":\"" + jsonEscape(gpsLatitude) + "\",";
   json += "\"gpsLon\":\"" + jsonEscape(gpsLongitude) + "\",";
-  json += "\"smsTo\":\"" + String(RECIPIENT_NUMBER) + "\",";
+  json += "\"smsTo\":\"" + jsonEscape(smsNumbersJoined()) + "\",";
+  json += "\"smsCount\":" + String(smsPhoneCount) + ",";
   json += "\"smsStatus\":\"" + jsonEscape(smsStatus) + "\",";
   json += "\"smsText\":\"" + jsonEscape(smsLastText) + "\",";
   json += "\"smsResult\":\"" + jsonEscape(smsLastResult) + "\",";
@@ -1160,6 +1348,7 @@ void setupWiFi() {
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("  [WIFI] SSID: ");
   Serial.println(ap_ssid);
+  Serial.println("  [WIFI] SoftAP: mo (khong mat khau)");
   Serial.print("  [WIFI] Channel: ");
   Serial.println(WIFI_AP_CHANNEL);
   Serial.print("  [WIFI] AP IP: ");
@@ -1175,6 +1364,8 @@ void setupWiFi() {
   server.on("/api/toggleGps", handleToggleGps);
   server.on("/api/toggleBuzzer", handleToggleBuzzer);
   server.on("/api/sendTestSms", handleSendTestSms);
+  server.on("/api/smsNumbers", HTTP_GET, handleSmsNumbersGet);
+  server.on("/api/smsNumbers", HTTP_POST, handleSmsNumbersPost);
   server.on("/api/wifi", HTTP_GET, handleWifiApiGet);
   server.on("/api/wifi", HTTP_POST, handleWifiApiPost);
 
@@ -1213,6 +1404,9 @@ void setup() {
 
   // Khởi tạo I2C cho cảm biến SHT31
   Wire.begin(PIN_SDA, PIN_SCL);
+
+  // Số nhận SMS (NVS) — cấu hình từ app/web
+  loadSmsNumbers();
 
   // Khởi tạo Wi-Fi Access Point và Web Server
   setupWiFi();

@@ -17,7 +17,7 @@ Sau khi **Kết nối** (Gần máy hoặc MQTT):
 ## Dùng
 
 ### Gần máy
-1. Kết nối Wi‑Fi `Safety Remote` / `1234567890`
+1. Kết nối Wi‑Fi `Safety Remote` (không mật khẩu)
 2. App → **Gần máy** → `192.168.4.8`
 
 ### Từ xa (MQTT)

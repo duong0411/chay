@@ -10,23 +10,37 @@ def app_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
+def _has_ov_model(folder: Path) -> bool:
+    if not folder.exists():
+        return False
+    return any(folder.glob("*.xml")) and any(folder.glob("*.bin"))
+
+
 def models_dir() -> Path:
-    # Prefer writable models next to EXE when frozen
+    """Resolve model folder: beside EXE (if has xml) → bundled → beside EXE writable."""
     if getattr(os.sys, "frozen", False):
-        base = Path(os.sys.executable).resolve().parent / "models"
-        base.mkdir(parents=True, exist_ok=True)
+        beside = Path(os.sys.executable).resolve().parent / "models"
         bundled = app_root() / "models"
-        return base if any(base.glob("*")) or not bundled.exists() else bundled
+        if _has_ov_model(beside):
+            return beside
+        if _has_ov_model(bundled):
+            return bundled
+        if any(beside.glob("*.pt")):
+            return beside
+        if any(bundled.glob("*")):
+            return bundled
+        beside.mkdir(parents=True, exist_ok=True)
+        return beside
     return app_root() / "models"
 
 
 class AppConfig:
     APP_NAME = "Safety Remote Desktop"
-    APP_VERSION = "1.0.0"
+    APP_VERSION = "1.0.7"
 
     DEFAULT_HOST = "192.168.4.8"
     WIFI_NAME = "Safety Remote"
-    WIFI_PASSWORD = "1234567890"
+    WIFI_PASSWORD = ""  # SoftAP mở — không mật khẩu
     DEFAULT_CHIP_ID = "888"
 
     MQTT_HOST = "mqtt.duynguyen.io.vn"
@@ -39,12 +53,29 @@ class AppConfig:
 
     CAMERA_0 = 0
     CAMERA_1 = 1
+    # Laptop cam
     CAMERA_WIDTH = 640
     CAMERA_HEIGHT = 480
-    INFER_CONF = 0.35
+    CAMERA_FPS = 18
+    # USB Shopee: 640x480 DEFAULT (không ép MJPG trước) — tránh ảnh nhiễu
+    USB_CAMERA_WIDTH = 640
+    USB_CAMERA_HEIGHT = 480
+    USB_CAMERA_FPS = 15
+    PREVIEW_MAX_FPS = 15
+    USB_PREVIEW_MAX_FPS = 12
+    INFER_MAX_FPS = 6
+    USB_INFER_MAX_FPS = 4
+    PREVIEW_MAX_WIDTH = 480
+    USB_PREVIEW_MAX_WIDTH = 420
+    # Ưu tiên GStreamer nếu OpenCV build có GST
+    PREFER_GSTREAMER = True
+    INFER_CONF = 0.30
     INFER_IOU = 0.45
+    FIRE_CONFIRM_HITS = 2
+    FIRE_CONFIRM_WINDOW = 3
+    INFER_MIN_MEAN = 8.0
+    OPENVINO_THREADS = 2
 
-    # YOLOv8n fire/smoke (Roboflow / community) — converted to OpenVINO
     MODEL_NAME = "yolov8n_fire"
     FIRE_CLASSES = {"fire", "smoke", "flame", "Fire", "Smoke", "Flame"}
 
@@ -58,7 +89,6 @@ class AppConfig:
 
     @staticmethod
     def topic_vision(chip: str) -> str:
-        """AI camera fire alert → mobile app (cùng broker duynguyen)."""
         return f"tele/{chip}_vision/status"
 
     @staticmethod

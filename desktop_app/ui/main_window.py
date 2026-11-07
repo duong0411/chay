@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Optional
 
 from PyQt5.QtCore import Qt, QTimer
@@ -16,6 +17,7 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSizePolicy,
+    QSlider,
     QSplitter,
     QStatusBar,
     QVBoxLayout,
@@ -23,6 +25,7 @@ from PyQt5.QtWidgets import (
 )
 
 from ai.fire_detector import FireDetector
+from core.camera_enum import CameraDevice, backend_status, list_cameras
 from core.config import AppConfig
 from core.device_api import DeviceApi, DeviceException
 from core.models import DeviceSnapshot
@@ -140,13 +143,17 @@ class MainWindow(QMainWindow):
         self.btn_cam.setObjectName("cyan")
         self.btn_cam.clicked.connect(self.toggle_cameras)
 
+        self.btn_refresh_cams = QPushButton("Quét cam")
+        self.btn_refresh_cams.setObjectName("ghost")
+        self.btn_refresh_cams.setToolTip("Quét lại webcam laptop / camera USB vừa cắm")
+        self.btn_refresh_cams.clicked.connect(self.refresh_camera_list)
+
         self.cam0 = QComboBox()
         self.cam1 = QComboBox()
-        for i in range(0, 6):
-            self.cam0.addItem(f"Cam {i}", i)
-            self.cam1.addItem(f"Cam {i}", i)
-        self.cam0.setCurrentIndex(0)
-        self.cam1.setCurrentIndex(1 if self.cam1.count() > 1 else 0)
+        self.cam0.setMinimumWidth(220)
+        self.cam1.setMinimumWidth(220)
+        self._camera_devices: list[CameraDevice] = []
+        self.refresh_camera_list()
 
         layout.addWidget(self.mode_box)
         layout.addWidget(self.input, 1)
@@ -157,6 +164,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.cam0)
         layout.addWidget(QLabel("CAM B"))
         layout.addWidget(self.cam1)
+        layout.addWidget(self.btn_refresh_cams)
         layout.addWidget(self.btn_cam)
         return bar
 
@@ -224,6 +232,28 @@ class MainWindow(QMainWindow):
         title_row.addStretch(1)
         title_row.addWidget(self.ai_badge)
         layout.addLayout(title_row)
+
+        conf_row = QHBoxLayout()
+        conf_row.setSpacing(10)
+        conf_lbl = QLabel("Confidence")
+        conf_lbl.setObjectName("muted")
+        self.conf_slider = QSlider(Qt.Horizontal)
+        self.conf_slider.setMinimum(10)
+        self.conf_slider.setMaximum(90)
+        self.conf_slider.setSingleStep(1)
+        self.conf_slider.setPageStep(5)
+        self.conf_slider.setValue(int(round(AppConfig.INFER_CONF * 100)))
+        self.conf_slider.setMinimumWidth(160)
+        self.conf_slider.setToolTip("Ngưỡng phát hiện lửa/khói — thấp = nhạy hơn, cao = ít báo nhầm")
+        self.conf_value = QLabel(f"{self.conf_slider.value()}%")
+        self.conf_value.setObjectName("badge")
+        self.conf_value.setMinimumWidth(48)
+        self.conf_value.setAlignment(Qt.AlignCenter)
+        self.conf_slider.valueChanged.connect(self._on_conf_changed)
+        conf_row.addWidget(conf_lbl)
+        conf_row.addWidget(self.conf_slider, 1)
+        conf_row.addWidget(self.conf_value)
+        layout.addLayout(conf_row)
 
         self.cam_panel_0 = CameraPanel("Camera A", 0)
         self.cam_panel_1 = CameraPanel("Camera B", 1)
@@ -331,8 +361,7 @@ class MainWindow(QMainWindow):
 
     def _apply_snapshot(self, snap: DeviceSnapshot) -> None:
         snap.vision_fire = self._vision_fire
-        if self._vision_fire:
-            snap.vision_label = "Camera AI phát hiện lửa"
+        snap.vision_label = "Camera AI phát hiện lửa" if self._vision_fire else ""
         self.data = snap
 
         self.metric_volt.set_value(
@@ -441,6 +470,55 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "SMS", str(e))
 
     # ── Cameras ───────────────────────────────────────────────────────
+    def refresh_camera_list(self) -> None:
+        """Populate Cam A/B with laptop webcam + USB camera friendly names."""
+        prev0 = self.cam0.currentData()
+        prev1 = self.cam1.currentData()
+        self._camera_devices = list_cameras()
+        self.cam0.blockSignals(True)
+        self.cam1.blockSignals(True)
+        self.cam0.clear()
+        self.cam1.clear()
+        if not self._camera_devices:
+            self.cam0.addItem("Không thấy camera", None)
+            self.cam1.addItem("Không thấy camera", None)
+            self.cam0.blockSignals(False)
+            self.cam1.blockSignals(False)
+            self._set_status("Không thấy camera — cắm USB rồi bấm Quét cam")
+            return
+
+        for dev in self._camera_devices:
+            self.cam0.addItem(dev.label, dev.index)
+            self.cam1.addItem(dev.label, dev.index)
+
+        # Prefer distinct devices: Cam A = first, Cam B = second (laptop+USB or 2 USB)
+        def _select(box: QComboBox, prefer, fallback: int) -> None:
+            if prefer is not None:
+                i = box.findData(prefer)
+                if i >= 0:
+                    box.setCurrentIndex(i)
+                    return
+            box.setCurrentIndex(min(fallback, box.count() - 1))
+
+        _select(self.cam0, prev0, 0)
+        _select(self.cam1, prev1, 1 if len(self._camera_devices) > 1 else 0)
+        # If both still same after restore, force Cam B to next device
+        if self.cam0.currentData() == self.cam1.currentData() and len(self._camera_devices) > 1:
+            self.cam1.setCurrentIndex(1 if self.cam0.currentIndex() == 0 else 0)
+
+        self.cam0.blockSignals(False)
+        self.cam1.blockSignals(False)
+        names = ", ".join(d.name for d in self._camera_devices)
+        self._set_status(f"Đã quét {len(self._camera_devices)} camera: {names}")
+
+    def _device_for_index(self, index: int | None) -> CameraDevice | None:
+        if index is None:
+            return None
+        for d in self._camera_devices:
+            if d.index == index:
+                return d
+        return None
+
     def toggle_cameras(self) -> None:
         if self._workers:
             self._stop_cameras()
@@ -451,6 +529,26 @@ class MainWindow(QMainWindow):
 
     def _start_cameras(self) -> None:
         self._stop_cameras()
+        if not self._camera_devices:
+            self.refresh_camera_list()
+        src0 = self.cam0.currentData()
+        src1 = self.cam1.currentData()
+        if src0 is None or src1 is None:
+            QMessageBox.warning(
+                self,
+                "Camera",
+                "Chưa có camera.\nCắm webcam laptop / USB rồi bấm Quét cam.",
+            )
+            return
+        if src0 == src1:
+            QMessageBox.warning(
+                self,
+                "Camera",
+                "Cam A và Cam B đang chọn cùng một thiết bị.\n"
+                "Hãy chọn 1 webcam laptop + 1 USB, hoặc 2 camera USB khác nhau.",
+            )
+            return
+
         # MQTT bắt buộc để đẩy cảnh báo AI sang điện thoại (broker duynguyen)
         chip = self.input.text().strip() if self.mode_box.currentData() == "mqtt" else self.chip
         chip = chip or self.chip or AppConfig.DEFAULT_CHIP_ID
@@ -466,16 +564,36 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(f"Camera AI · MQTT chip {chip} sẵn sàng đẩy cảnh báo về ĐT")
 
-        sources = [self.cam0.currentData(), self.cam1.currentData()]
+        sources = [src0, src1]
         panels = [self.cam_panel_0, self.cam_panel_1]
-        for idx, src in enumerate(sources):
-            worker = CameraWorker(idx, self.detector)
-            worker.set_source(src)
-            worker.frame_ready.connect(self._on_frame)
-            worker.status.connect(self._on_cam_status)
+        # Mở USB trước laptop — giảm tranh bandwidth / driver trên Windows
+        order = sorted(
+            range(len(sources)),
+            key=lambda i: (0 if (self._device_for_index(sources[i]) and self._device_for_index(sources[i]).is_usb) else 1, i),
+        )
+        pending: list[CameraWorker | None] = [None, None]
+        for idx in order:
+            src = sources[idx]
+            dev = self._device_for_index(src)
+            label = dev.label if dev else f"Camera {src}"
+            det = FireDetector(conf=self._current_conf())
+            worker = CameraWorker(idx, det)
+            worker.set_source(
+                src,
+                backend=dev.backend if dev else None,
+                label=label,
+                path=dev.path if dev else "",
+                name=dev.name if dev else "",
+                device=dev,
+            )
+            worker.frame_ready.connect(self._on_frame, Qt.QueuedConnection)
+            worker.status.connect(self._on_cam_status, Qt.QueuedConnection)
             worker.start()
-            self._workers.append(worker)
-            panels[idx].set_status(f"Đang mở camera {src}...")
+            pending[idx] = worker
+            panels[idx].set_status(f"Đang mở {label}...")
+            if dev and dev.is_usb:
+                time.sleep(0.35)
+        self._workers = [w for w in pending if w is not None]
 
     def _stop_cameras(self) -> None:
         for w in self._workers:
@@ -486,8 +604,9 @@ class MainWindow(QMainWindow):
             self._publish_vision_to_phone(False)
         self._vision_fire = False
         self._vision_published = False
-        if self.data:
-            self._apply_snapshot(self.data)
+        self.cam_panel_0._fire = False
+        self.cam_panel_1._fire = False
+        self._refresh_vision_alarm(False)
 
     def _publish_vision_to_phone(self, fire: bool) -> None:
         """MQTT WSS → tele/{chip}_vision/status → app mobile cảnh báo."""
@@ -505,11 +624,38 @@ class MainWindow(QMainWindow):
                 else "Đã gửi hết cảnh báo AI → điện thoại"
             )
         else:
-            self._set_status("Camera AI cháy nhưng MQTT chưa kết nối — ĐT không nhận được")
+            self._set_status(
+                "Camera AI cháy nhưng MQTT chưa kết nối — ĐT không nhận được"
+                if fire
+                else "Hết cảnh báo AI (MQTT chưa kết nối)"
+            )
+
+    def _refresh_vision_alarm(self, any_fire: bool) -> None:
+        """Bật/tắt banner + tile cháy theo AI; tôn trọng cảnh báo gas/GPIO nếu đang có."""
+        if self.data:
+            self._apply_snapshot(self.data)
+            return
+        # Chỉ chạy camera AI, chưa có dữ liệu thiết bị
+        if any_fire:
+            self.alarm.set_state(True, "Camera AI phát hiện lửa/khói")
+            self.metric_fire.set_value("CHÁY", "", "AI Camera", alert=True)
+            if not self._alarm_blink.isActive():
+                self._alarm_blink.start(500)
+        else:
+            self.alarm.set_state(False, "")
+            self.metric_fire.set_value("OK", "", "AI Camera", alert=False)
+            self._alarm_blink.stop()
+            self._blink_on = False
+            self.alarm.setStyleSheet("")
+            self.alarm.style().unpolish(self.alarm)
+            self.alarm.style().polish(self.alarm)
 
     def _on_frame(self, cam_id: int, rgb, dets, fps: float, infer_ms: float, fire: bool) -> None:
         panel = self.cam_panel_0 if cam_id == 0 else self.cam_panel_1
-        panel.show_frame(rgb, fps, infer_ms, fire, self.detector.backend)
+        backend = self.detector.backend
+        if cam_id < len(self._workers):
+            backend = self._workers[cam_id].detector.backend or backend
+        panel.show_frame(rgb, fps, infer_ms, fire, backend)
         # keep last flags on panels
         if cam_id == 0:
             self.cam_panel_0._fire = fire
@@ -519,31 +665,46 @@ class MainWindow(QMainWindow):
         if any_fire != self._vision_fire:
             self._vision_fire = any_fire
             self._publish_vision_to_phone(any_fire)
-            if self.data:
-                self._apply_snapshot(self.data)
-            elif any_fire:
-                self.alarm.set_state(True, "Camera AI phát hiện lửa/khói")
-                self.metric_fire.set_value("CHÁY", "", "AI Camera", alert=True)
+            self._refresh_vision_alarm(any_fire)
 
     def _on_cam_status(self, cam_id: int, text: str) -> None:
         panel = self.cam_panel_0 if cam_id == 0 else self.cam_panel_1
         panel.set_status(text)
         self._set_status(text)
 
+    def _current_conf(self) -> float:
+        if hasattr(self, "conf_slider"):
+            return max(0.05, min(0.95, self.conf_slider.value() / 100.0))
+        return AppConfig.INFER_CONF
+
+    def _on_conf_changed(self, value: int) -> None:
+        conf = max(0.05, min(0.95, value / 100.0))
+        if hasattr(self, "conf_value"):
+            self.conf_value.setText(f"{value}%")
+        self.detector.conf = conf
+        for w in self._workers:
+            w.detector.conf = conf
+        self._set_status(f"Confidence AI = {value}% ({'nhạy' if value < 40 else 'cân bằng' if value < 60 else 'chặt'})")
+
     def _refresh_ai_badge(self) -> None:
         if self.detector.ready:
             self.ai_badge.setText(f"AI · {self.detector.backend.upper()}")
             self.ai_badge.setObjectName("badgeOk")
-            self.ai_status.setText(f"Model sẵn sàng ({self.detector.backend})")
+            self.ai_status.setText(
+                f"Model sẵn sàng ({self.detector.backend}) · Cam {backend_status()}"
+            )
         else:
             self.ai_badge.setText("NO MODEL")
             self.ai_badge.setObjectName("badgeWarn")
             self.ai_status.setText(self.detector.error or "Chưa có model YOLO")
         self.ai_badge.style().unpolish(self.ai_badge)
         self.ai_badge.style().polish(self.ai_badge)
+        if hasattr(self, "conf_slider"):
+            self._on_conf_changed(self.conf_slider.value())
 
     def _set_status(self, text: str) -> None:
-        self.status_label.setText(text)
+        if hasattr(self, "status_label") and self.status_label is not None:
+            self.status_label.setText(text)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._stop_cameras()
